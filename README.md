@@ -54,3 +54,16 @@ This combo makes rep+ handy for bug bounty hunters and vulnerability researchers
 
 [![Star History Chart](https://api.star-history.com/svg?repos=bscript/rep&type=date&legend=top-left)](https://www.star-history.com/#bscript/rep&type=date&legend=top-left)
 
+
+## ❤️ Support the Project
+
+I maintain **rep+** alone, in my free time.  
+Sponsorship helps me keep improving the extension, adding new features, and responding to issues quickly.
+
+If **rep+ saved you time** during testing, development, or bug bounty work, please consider supporting the project.  
+**Every dollar helps. ❤️**
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-💖-ea4aaa?style=for-the-badge)](https://github.com/sponsors/bscript)
+
+
+
