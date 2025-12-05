@@ -104,10 +104,10 @@ export function initUI() {
 
         const { analyzeAttackSurface, cacheCategories } = await import('./attack-surface.js');
 
-        // Get all requests for this domain
+        // Get all requests for this domain (page group)
         const domainRequests = state.requests.filter((req, idx) => {
-            const reqHostname = getHostname(req.request?.url || req.pageUrl || '');
-            return reqHostname === domain;
+            const requestPageHostname = getHostname(req.pageUrl || req.request.url);
+            return requestPageHostname === domain;
         });
 
         if (domainRequests.length === 0) {
@@ -313,27 +313,29 @@ export function toggleAllGroups() {
     state.manuallyCollapsed = !shouldExpand;
 
     allGroups.forEach(group => {
+        // Toggle class on group
         if (shouldExpand) {
             group.classList.add('expanded');
-            const pageContent = group.querySelector('.page-content');
-            const domainContent = group.querySelector('.domain-content');
-            const pageToggle = group.querySelector('.page-toggle-btn');
-            const domainToggle = group.querySelector('.domain-toggle-btn');
-
-            if (pageContent) pageContent.style.display = 'block';
-            if (domainContent) domainContent.style.display = 'block';
-            if (pageToggle) pageToggle.classList.add('expanded');
-            if (domainToggle) domainToggle.style.transform = 'rotate(90deg)';
         } else {
             group.classList.remove('expanded');
-            const pageContent = group.querySelector('.page-content');
-            const domainContent = group.querySelector('.domain-content');
-            const pageToggle = group.querySelector('.page-toggle-btn');
-            const domainToggle = group.querySelector('.domain-toggle-btn');
+        }
 
-            if (pageContent) pageContent.style.display = 'none';
-            if (domainContent) domainContent.style.display = 'none';
-            if (pageToggle) pageToggle.classList.remove('expanded');
+        // Clean up any inline styles that might have been set previously
+        const pageContent = group.querySelector('.page-content');
+        const domainContent = group.querySelector('.domain-content');
+
+        if (pageContent) pageContent.style.display = '';
+        if (domainContent) domainContent.style.display = '';
+
+        // Update toggle icons
+        const pageToggle = group.querySelector('.page-toggle-btn');
+        const domainToggle = group.querySelector('.domain-toggle-btn');
+
+        if (shouldExpand) {
+            if (pageToggle) pageToggle.style.transform = 'rotate(90deg)';
+            if (domainToggle) domainToggle.style.transform = 'rotate(90deg)';
+        } else {
+            if (pageToggle) pageToggle.style.transform = 'rotate(0deg)';
             if (domainToggle) domainToggle.style.transform = 'rotate(0deg)';
         }
     });
@@ -408,7 +410,7 @@ function createPageGroup(pageUrl) {
     const hasAnalysis = state.domainsWithAttackSurface.has(pageHostname);
 
     header.innerHTML = `
-        <span class="group-toggle">▶</span>
+        <span class="page-toggle-btn">▶</span>
         <span class="page-icon">📄</span>
         <span class="page-name">${escapeHtml(pageHostname)}</span>
         <span class="page-count">(0)</span>
@@ -428,8 +430,6 @@ function createPageGroup(pageUrl) {
         if (e.target.closest('.group-ai-btn') || e.target.closest('.group-star-btn')) return;
 
         group.classList.toggle('expanded');
-        const toggle = header.querySelector('.group-toggle');
-        toggle.textContent = group.classList.contains('expanded') ? '▼' : '▶';
     });
 
     // AI button handler
@@ -853,12 +853,12 @@ function renderDomainAttackSurface(pageContent, pageHostname) {
     // Clear existing content
     pageContent.innerHTML = '';
 
-    // Get all requests for this domain
+    // Get all requests for this domain (page group)
     const domainRequests = state.requests
         .map((req, idx) => ({ req, idx }))
         .filter(({ req }) => {
-            const reqHostname = getHostname(req.request?.url || req.pageUrl || '');
-            return reqHostname === pageHostname;
+            const requestPageHostname = getHostname(req.pageUrl || req.request.url);
+            return requestPageHostname === pageHostname;
         });
 
     // Group by category
