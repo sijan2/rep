@@ -114,6 +114,7 @@ export const EVENT_NAMES = {
     
     // State events
     STATE_REQUESTS_CLEARED: 'state:requests-cleared',
+    STATE_REQUESTS_UPDATED: 'state:requests-updated',
     STATE_FILTER_CHANGED: 'state:filter-changed',
     STATE_SEARCH_CHANGED: 'state:search-changed',
     
@@ -125,4 +126,3 @@ export const EVENT_NAMES = {
     REQUESTS_EXPORTED: 'requests:exported',
     REQUESTS_IMPORTED: 'requests:imported',
 };
-

@@ -204,8 +204,17 @@ export function initUI() {
 
 function setupEventListeners() {
     // Request selection (from request-list.js)
-    events.on(EVENT_NAMES.REQUEST_SELECTED, (index) => {
-        selectRequest(index);
+    // Only handle numeric index from UI clicks, not object payloads from actions
+    // (actions.request.select already handles the selection, emitting object payload)
+    events.on(EVENT_NAMES.REQUEST_SELECTED, (payload) => {
+        // If payload is an object, it's from actions.request.select - skip to avoid loop
+        if (payload && typeof payload === 'object') {
+            return;
+        }
+        // Only handle direct index from UI clicks
+        if (typeof payload === 'number') {
+            selectRequest(payload);
+        }
     });
 
     // Request selected UI updates (from request-editor.js)

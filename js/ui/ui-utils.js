@@ -3,6 +3,7 @@ import { state, actions } from '../core/state.js';
 import { highlightHTTP } from '../core/utils/network.js';
 import { decodeJWT } from '../core/utils/misc.js';
 import { events, EVENT_NAMES } from '../core/events.js';
+import { buildStableRequestId } from '../core/utils/hash.js';
 import { elements } from './main-ui.js'; // Keep for context menu and undo/redo which need direct element access
 
 export function updateHistoryButtons() {
@@ -1629,25 +1630,49 @@ export function exportRequests() {
         exported_at: new Date().toISOString(),
         requests: requestsToExport.map((req, index) => {
             const headersObj = {};
-            req.request.headers.forEach(h => headersObj[h.name] = h.value);
-
-            const resHeadersObj = {};
-            if (req.response.headers) {
-                req.response.headers.forEach(h => resHeadersObj[h.name] = h.value);
+            if (req.request?.headers) {
+                req.request.headers.forEach(h => {
+                    if (!headersObj[h.name]) {
+                        headersObj[h.name] = [];
+                    }
+                    headersObj[h.name].push(h.value);
+                });
             }
 
+            const resHeadersObj = {};
+            if (req.response?.headers) {
+                req.response.headers.forEach(h => {
+                    if (!resHeadersObj[h.name]) {
+                        resHeadersObj[h.name] = [];
+                    }
+                    resHeadersObj[h.name].push(h.value);
+                });
+            }
+
+            const timestamp = req.capturedAt || Date.now();
+            const method = req.request?.method || 'GET';
+            const url = req.request?.url || '';
+            const requestId = req.requestId || req._requestId || req.request?.requestId || '';
+            const tabId = req.tabId || req._tabId || '';
+            const stableId = buildStableRequestId({ requestId, tabId, timestamp, method, url });
+
             return {
-                id: `req_${index + 1}`,
-                method: req.request.method,
-                url: req.request.url,
+                id: stableId,
+                original_id: `req_${index + 1}`,
+                method: method,
+                url: url,
+                page_url: req.pageUrl || url,
+                resource_type: req.resourceType || req.type || '',
+                initiator: req.initiator || '',
                 headers: headersObj,
-                body: req.request.postData ? req.request.postData.text : "",
+                body: req.request?.postData?.text || '',
                 response: {
-                    status: req.response.status,
+                    status: req.response?.status || 0,
                     headers: resHeadersObj,
-                    body: req.response.content ? req.response.content.text : ""
+                    body: req.responseBody || req.response?.content?.text || ''
                 },
-                timestamp: req.capturedAt
+                response_encoding: req.responseEncoding || '',
+                timestamp: timestamp
             };
         })
     };
@@ -1677,16 +1702,26 @@ export function importRequests(file) {
                 const headersArr = [];
                 if (item.headers) {
                     for (const [key, value] of Object.entries(item.headers)) {
-                        headersArr.push({ name: key, value: value });
+                        if (Array.isArray(value)) {
+                            value.forEach(v => headersArr.push({ name: key, value: v }));
+                        } else {
+                            headersArr.push({ name: key, value: value });
+                        }
                     }
                 }
 
                 const resHeadersArr = [];
                 if (item.response && item.response.headers) {
                     for (const [key, value] of Object.entries(item.response.headers)) {
-                        resHeadersArr.push({ name: key, value: value });
+                        if (Array.isArray(value)) {
+                            value.forEach(v => resHeadersArr.push({ name: key, value: v }));
+                        } else {
+                            resHeadersArr.push({ name: key, value: value });
+                        }
                     }
                 }
+
+                const pageUrl = item.page_url || item.pageUrl || item.url || '';
 
                 const newReq = {
                     request: {
@@ -1702,7 +1737,13 @@ export function importRequests(file) {
                         content: { text: item.response ? item.response.body : '' }
                     },
                     capturedAt: item.timestamp || Date.now(),
-                    starred: false
+                    starred: false,
+                    pageUrl: pageUrl,
+                    resourceType: item.resource_type || item.resourceType || '',
+                    initiator: item.initiator || '',
+                    responseEncoding: item.response_encoding || item.responseEncoding || '',
+                    tabId: item.tab_id || item.tabId || null,
+                    requestId: item.request_id || item.requestId || null
                 };
 
                 // Use action to add request (automatically emits events)
@@ -1718,4 +1759,3 @@ export function importRequests(file) {
     };
     reader.readAsText(file);
 }
-

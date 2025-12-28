@@ -166,6 +166,7 @@ export const requestActions = {
             }
             
             // Emit event
+            events.emit(EVENT_NAMES.STATE_REQUESTS_UPDATED);
             events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
         }
     },
@@ -251,6 +252,7 @@ export const requestActions = {
         }
         
         // Emit events
+        events.emit(EVENT_NAMES.STATE_REQUESTS_UPDATED);
         events.emit(EVENT_NAMES.REQUEST_FILTERED);
         if (removedFromQueue > 0) {
             events.emit('block-queue:updated');
@@ -561,4 +563,3 @@ export const actions = {
     diff: diffActions,
     attackSurface: attackSurfaceActions
 };
-

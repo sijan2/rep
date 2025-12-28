@@ -78,10 +78,13 @@ export function downloadJSON(data, filename) {
 
 export async function copyToClipboard(text, btn) {
     // Check if we're in DevTools context (clipboard API is blocked)
-    const isDevToolsContext = window.location.protocol === 'devtools:';
-    
-    // In DevTools, skip clipboard API and go straight to fallback
-    if (!isDevToolsContext) {
+    const hasDevtoolsApi = typeof chrome !== 'undefined' && !!chrome.devtools;
+    const isDevToolsContext = hasDevtoolsApi || window.location.protocol === 'devtools:';
+    const policyBlocksClipboard = !!document.permissionsPolicy &&
+        !document.permissionsPolicy.allowsFeature('clipboard-write');
+
+    // In DevTools or when policy blocks, skip clipboard API and go straight to fallback
+    if (!isDevToolsContext && !policyBlocksClipboard && navigator.clipboard) {
         try {
             // Try modern API first
             await navigator.clipboard.writeText(text);
@@ -161,4 +164,3 @@ function showCopySuccess(btn) {
         }
     }, 1500);
 }
-

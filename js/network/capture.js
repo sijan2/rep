@@ -3,7 +3,9 @@
 export function setupNetworkListener(onRequestCaptured) {
     // Get the current page URL once at setup
     let currentPageUrl = '';
+    let inspectedTabId = null;
     if (chrome.devtools && chrome.devtools.inspectedWindow) {
+        inspectedTabId = chrome.devtools.inspectedWindow.tabId || null;
         chrome.devtools.inspectedWindow.eval('window.location.href', (result, isException) => {
             if (!isException && result) {
                 currentPageUrl = result;
@@ -44,6 +46,9 @@ export function setupNetworkListener(onRequestCaptured) {
 
         // Store the page URL that this request belongs to
         request.pageUrl = currentPageUrl || request.request.url;
+        request.tabId = inspectedTabId;
+        request.requestId = request.requestId || request._requestId || '';
+        request.resourceType = request.resourceType || request.type || '';
 
         // Fetch response content so we can show it without switching tabs
         request.getContent((body, encoding) => {

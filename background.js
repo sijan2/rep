@@ -319,6 +319,7 @@ function handleBeforeRequest(details) {
         url: details.url,
         method: details.method,
         type: details.type,
+        resourceType: details.type,
         timeStamp: Date.now(),
         requestBody: parseRequestBody(details.requestBody),
         tabId: details.tabId,

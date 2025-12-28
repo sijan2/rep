@@ -55,7 +55,11 @@ export function initMultiTabCapture() {
                         },
                         capturedAt: req.timeStamp,
                         fromOtherTab: true, // Flag to indicate source
-                        pageUrl: req.initiator || req.url // Use initiator as pageUrl for grouping
+                        pageUrl: req.initiator || req.url, // Use initiator as pageUrl for grouping
+                        tabId: req.tabId || null,
+                        requestId: req.requestId || null,
+                        initiator: req.initiator || '',
+                        resourceType: req.type || req.resourceType || ''
                     };
 
                     // Filter static resources

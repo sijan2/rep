@@ -20,6 +20,7 @@ import { initExtractorUI } from './features/extractors/index.js';
 import { setupAIFeatures } from './features/ai/index.js';
 import { handleSendRequest } from './network/handler.js';
 import { initSearch } from './search/index.js';
+import { initLiveExport } from './features/live-export.js';
 
 // UI Modules
 import { setupBlockControls } from './ui/block-controls.js';
@@ -39,21 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupBulkReplay();
     setupAIFeatures(elements);
     initSearch();
-
-    // Promotional Banner
-    if (elements.promoBanner && elements.closeBannerBtn) {
-        // Check if banner was previously dismissed
-        const bannerDismissed = localStorage.getItem('repPlusBannerDismissed');
-        if (bannerDismissed === 'true') {
-            elements.promoBanner.classList.add('hidden');
-        }
-
-        // Handle banner dismissal
-        elements.closeBannerBtn.addEventListener('click', () => {
-            elements.promoBanner.classList.add('hidden');
-            localStorage.setItem('repPlusBannerDismissed', 'true');
-        });
-    }
+    initLiveExport();
 
     // Setup Network Listener (Current Tab)
     const processCapturedRequest = (request) => {

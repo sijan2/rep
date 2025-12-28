@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(go get:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go build:*)",
+      "Bash(./rep:*)",
+      "Bash(cat:*)",
+      "Bash(~/.local/bin/rep sync:*)",
+      "Bash(fish:*)"
+    ]
+  }
+}
