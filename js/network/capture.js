@@ -22,6 +22,37 @@ export function setupNetworkListener(onRequestCaptured) {
         // Filter out data URLs or extension schemes
         if (!request.request.url.startsWith('http')) return;
 
+        // Filter out requests sent by rep+ extension (replayed requests)
+        // Check if request has our custom header
+        if (request.request.headers) {
+            const hasRepPlusHeader = request.request.headers.some(h => 
+                (h.name === 'X-Rep-Plus-Replay' || h.name.toLowerCase() === 'x-rep-plus-replay') && 
+                h.value === 'true'
+            );
+            if (hasRepPlusHeader) {
+                return; // Skip requests sent by our extension
+            }
+        }
+
+        // Filter out Chrome extension requests
+        // Extension IDs are 32-character alphanumeric strings
+        const extensionIdPattern = /^[a-z]{32}$/i;
+        try {
+            const urlObj = new URL(request.request.url);
+            const hostname = urlObj.hostname.toLowerCase();
+            
+            // Check if hostname is an extension ID (32 alphanumeric chars)
+            // or contains chrome-extension:// scheme
+            if (extensionIdPattern.test(hostname) || 
+                request.request.url.startsWith('chrome-extension://') ||
+                request.request.url.startsWith('chrome://') ||
+                request.request.url.startsWith('moz-extension://')) {
+                return;
+            }
+        } catch (e) {
+            // If URL parsing fails, continue with other checks
+        }
+
         // Filter out static resources (JS, CSS, images, fonts, etc.)
         const url = request.request.url.toLowerCase();
         const staticExtensions = [
@@ -45,7 +76,23 @@ export function setupNetworkListener(onRequestCaptured) {
         request.capturedAt = Date.now();
 
         // Store the page URL that this request belongs to
-        request.pageUrl = currentPageUrl || request.request.url;
+        const pageUrl = currentPageUrl || request.request.url;
+
+        // Skip if pageUrl is from an extension (chrome-extension:// or extension ID hostname)
+        try {
+            const pageUrlObj = new URL(pageUrl);
+            const pageHostname = pageUrlObj.hostname.toLowerCase();
+            if (extensionIdPattern.test(pageHostname) ||
+                pageUrl.startsWith('chrome-extension://') ||
+                pageUrl.startsWith('chrome://') ||
+                pageUrl.startsWith('moz-extension://')) {
+                return;
+            }
+        } catch (e) {
+            // If URL parsing fails, continue
+        }
+
+        request.pageUrl = pageUrl;
         request.tabId = inspectedTabId;
         request.requestId = request.requestId || request._requestId || '';
         request.resourceType = request.resourceType || request.type || '';
@@ -155,11 +202,22 @@ export function parseRequest(rawContent, useHttps) {
         }
     }
 
+    // Add cache-busting headers to prevent 304 Not Modified responses
+    // This ensures we always get fresh responses when replaying requests
+    filteredHeaders['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+    filteredHeaders['Pragma'] = 'no-cache';
+    filteredHeaders['Expires'] = '0';
+    
+    // Remove conditional headers that might cause 304 responses
+    delete filteredHeaders['If-None-Match'];
+    delete filteredHeaders['If-Modified-Since'];
+    
     const options = {
         method: method,
         headers: filteredHeaders,
         mode: 'cors',
-        credentials: 'include'
+        credentials: 'include',
+        cache: 'no-store' // Fetch API cache control
     };
 
     if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && bodyText) {
@@ -170,6 +228,13 @@ export function parseRequest(rawContent, useHttps) {
 }
 
 export async function executeRequest(url, options) {
+    // Add a custom header to identify requests sent by rep+ extension
+    // This allows us to filter them out from being captured
+    if (!options.headers) {
+        options.headers = {};
+    }
+    options.headers['X-Rep-Plus-Replay'] = 'true';
+    
     const startTime = performance.now();
     const response = await fetch(url, options);
     const endTime = performance.now();

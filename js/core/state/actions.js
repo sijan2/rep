@@ -17,9 +17,168 @@ import { getHostname } from '../utils/network.js';
 // Request Actions
 export const requestActions = {
     /**
+     * Check if a request is a duplicate of an existing request
+     * @param {Object} newRequest - New request to check
+     * @param {Array} existingRequests - Array of existing requests
+     * @returns {boolean} True if duplicate found
+     */
+    isDuplicate(newRequest, existingRequests) {
+        if (!newRequest || !newRequest.request) return false;
+        
+        const newReq = newRequest.request;
+        const newMethod = (newReq.method || 'GET').toUpperCase().trim();
+        const newUrl = (newReq.url || '').trim();
+        const newBody = (newReq.postData && newReq.postData.text) ? String(newReq.postData.text).trim() : '';
+        const newHeaders = this.normalizeHeaders(newReq.headers);
+        const newPageUrl = (newRequest.pageUrl || '').trim();
+        const newSignature = `${newMethod}|${newUrl}|${newHeaders}|${newBody}|${newPageUrl}`;
+        
+        // Check against existing requests
+        for (const existing of existingRequests) {
+            if (!existing || !existing.request) continue;
+            
+            const existingReq = existing.request;
+            const existingMethod = (existingReq.method || 'GET').toUpperCase().trim();
+            const existingUrl = (existingReq.url || '').trim();
+            const existingBody = (existingReq.postData && existingReq.postData.text) ? String(existingReq.postData.text).trim() : '';
+            const existingHeaders = this.normalizeHeaders(existingReq.headers);
+            const existingPageUrl = (existing.pageUrl || '').trim();
+            const existingSignature = `${existingMethod}|${existingUrl}|${existingHeaders}|${existingBody}|${existingPageUrl}`;
+            
+            // Compare signatures
+            if (newSignature === existingSignature) {
+                return true;
+            }
+        }
+        
+        return false;
+    },
+    
+    /**
+     * Normalize headers for comparison
+     * @param {Array|Object} headers - Headers in array or object format
+     * @returns {string} Normalized header string
+     */
+    normalizeHeaders(headers) {
+        if (!headers) return '';
+        
+        let headerArray = [];
+        if (Array.isArray(headers)) {
+            headerArray = headers;
+        } else if (typeof headers === 'object') {
+            headerArray = Object.entries(headers);
+        } else {
+            return '';
+        }
+        
+        // Filter out pseudo-headers (HTTP/2) and normalize
+        const normalized = headerArray
+            .filter(h => {
+                const name = (h.name || h[0] || '').toLowerCase();
+                // Skip HTTP/2 pseudo-headers
+                return name && !name.startsWith(':');
+            })
+            .map(h => {
+                const name = (h.name || h[0] || '').toLowerCase().trim();
+                const value = (h.value || h[1] || '').toLowerCase().trim();
+                return `${name}:${value}`;
+            })
+            .sort()
+            .join('|');
+        
+        return normalized;
+    },
+    
+    /**
+     * Remove duplicate requests from state
+     * @returns {number} Number of duplicates removed
+     */
+    removeDuplicates() {
+        const originalLength = state.requests.length;
+        if (originalLength === 0) return 0;
+        
+        const uniqueRequests = [];
+        const seen = new Set();
+        
+        for (const request of state.requests) {
+            if (!request || !request.request) {
+                // Invalid request, keep it but don't check for duplicates
+                uniqueRequests.push(request);
+                continue;
+            }
+            
+            const req = request.request;
+            const method = (req.method || 'GET').toUpperCase().trim();
+            const url = (req.url || '').trim();
+            const body = (req.postData && req.postData.text) ? String(req.postData.text).trim() : '';
+            
+            // Normalize headers using the helper method
+            const headers = this.normalizeHeaders(req.headers);
+            
+            // Include pageUrl in signature to differentiate requests from different websites/tabs
+            // This ensures requests from different contexts are not treated as duplicates
+            const pageUrl = (request.pageUrl || '').trim();
+            
+            // Create signature (includes pageUrl to preserve context)
+            const signature = `${method}|${url}|${headers}|${body}|${pageUrl}`;
+            
+            // Debug: log first few signatures to diagnose issues
+            if (seen.size < 3) {
+                console.log(`Signature ${seen.size + 1}:`, signature.substring(0, 100) + '...');
+            }
+            
+            if (!seen.has(signature)) {
+                seen.add(signature);
+                uniqueRequests.push(request);
+            } else {
+                console.log('Duplicate found:', signature.substring(0, 100) + '...');
+            }
+        }
+        
+        console.log(`removeDuplicates: ${originalLength} total, ${seen.size} unique, ${originalLength - seen.size} duplicates`);
+        
+        const removedCount = originalLength - uniqueRequests.length;
+        
+        if (removedCount > 0) {
+            // Store selected request reference before clearing
+            const selectedRequestRef = state.selectedRequest;
+            
+            state.requests = uniqueRequests;
+            
+            // Clear selection if selected request was removed
+            if (selectedRequestRef && !uniqueRequests.includes(selectedRequestRef)) {
+                state.selectedRequest = null;
+                // Clear UI elements since selected request was removed
+                events.emit(EVENT_NAMES.UI_CLEAR_ALL);
+            } else if (selectedRequestRef) {
+                // Selected request still exists, but we need to update its reference
+                // in case the array was recreated (though in this case it's the same object)
+                state.selectedRequest = selectedRequestRef;
+            }
+            
+            // Clear the request list UI
+            const requestList = document.getElementById('request-list');
+            if (requestList) {
+                requestList.innerHTML = '';
+            }
+            
+            // Re-render all unique requests from scratch
+            // We need to emit REQUEST_RENDERED for each request to rebuild the DOM
+            uniqueRequests.forEach((request, index) => {
+                events.emit(EVENT_NAMES.REQUEST_RENDERED, { request, index });
+            });
+            
+            // Also trigger filterRequests to handle grouping and filtering
+            events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
+        }
+        
+        return removedCount;
+    },
+    
+    /**
      * Add a new request to state
      * @param {Object} request - Request object to add
-     * @returns {number} Index of the added request
+     * @returns {number|null} Index of the added request, or null if duplicate was skipped
      */
     add(request) {
         // Initialize defaults
@@ -27,6 +186,13 @@ export const requestActions = {
         request.color = null;
         if (typeof request.name !== 'string') {
             request.name = null;
+        }
+        
+        // Check for duplicates if enabled (default: true)
+        const removeDuplicatesEnabled = localStorage.getItem('rep_remove_duplicates') !== 'false';
+        if (removeDuplicatesEnabled && this.isDuplicate(request, state.requests)) {
+            // Skip adding duplicate
+            return null;
         }
         
         state.requests.push(request);

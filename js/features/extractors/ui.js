@@ -859,7 +859,7 @@ export function initExtractorUI() {
                 // Hide progress bar and steps after a delay
                 setTimeout(() => {
                     if (isScanComplete) {
-                        extractorProgress.style.display = 'none';
+                    extractorProgress.style.display = 'none';
                         if (scanSteps) scanSteps.style.display = 'none';
                     }
                 }, 2000);

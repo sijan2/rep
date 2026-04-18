@@ -36,6 +36,28 @@ export function initMultiTabCapture() {
                     // Skip requests from the current inspected tab (handled by setupNetworkListener)
                     if (chrome.devtools && chrome.devtools.inspectedWindow && req.tabId === chrome.devtools.inspectedWindow.tabId) return;
 
+                    // Filter out non-HTTP requests
+                    if (!req.url || !req.url.startsWith('http')) return;
+
+                    // Filter out Chrome extension requests
+                    // Extension IDs are 32-character alphanumeric strings
+                    const extensionIdPattern = /^[a-z]{32}$/i;
+                    try {
+                        const urlObj = new URL(req.url);
+                        const hostname = urlObj.hostname.toLowerCase();
+                        
+                        // Check if hostname is an extension ID (32 alphanumeric chars)
+                        // or contains chrome-extension:// scheme
+                        if (extensionIdPattern.test(hostname) || 
+                            req.url.startsWith('chrome-extension://') ||
+                            req.url.startsWith('chrome://') ||
+                            req.url.startsWith('moz-extension://')) {
+                            return;
+                        }
+                    } catch (e) {
+                        // If URL parsing fails, continue with other checks
+                    }
+
                     // Convert to HAR-like format
                     const harEntry = {
                         request: {

@@ -3,6 +3,7 @@ import { getAISettings, streamChatWithMessages } from '../ai/core.js';
 import { state, actions } from '../../core/state.js';
 import { events, EVENT_NAMES } from '../../core/events.js';
 import { formatRawResponse } from '../../network/response-parser.js';
+import { handleSendRequest } from '../../network/handler.js';
 import { highlightHTTP } from '../../core/utils/network.js';
 import { elements } from '../../ui/main-ui.js';
 
@@ -891,6 +892,42 @@ export function setupLLMChat(elements) {
                                 };
                                 
                                 actionsDiv.appendChild(button);
+                                // Add Apply & Send button
+                                const sendButton = document.createElement('button');
+                                sendButton.className = 'llm-chat-apply-send-btn';
+                                sendButton.textContent = 'Apply Request & Send';
+                                sendButton.title = 'Apply changes and send request immediately';
+                                
+                                sendButton.onclick = async () => {
+                                    if (applyRequestModification(suggestion)) {
+                                        sendButton.textContent = '✓ Sending...';
+                                        sendButton.disabled = true;
+                                        sendButton.classList.add('applied');
+                                        
+                                        // Update the other button too
+                                        button.textContent = '✓ Applied';
+                                        button.disabled = true;
+                                        button.classList.add('applied');
+                                        
+                                        try {
+                                            await handleSendRequest();
+                                            sendButton.textContent = '✓ Sent';
+                                        } catch (e) {
+                                            sendButton.textContent = '✗ Send Failed';
+                                            sendButton.classList.add('error');
+                                            console.error('Apply & Send failed:', e);
+                                        }
+                                    } else {
+                                        sendButton.textContent = '✗ Failed';
+                                        sendButton.classList.add('error');
+                                        setTimeout(() => {
+                                            sendButton.textContent = 'Apply & Send';
+                                            sendButton.classList.remove('error');
+                                        }, 2000);
+                                    }
+                                };
+                                
+                                actionsDiv.appendChild(sendButton);
                             });
                             
                             messageContainer.appendChild(actionsDiv);

@@ -31,6 +31,7 @@ export function initUI() {
     elements.screenshotBtn = document.getElementById('screenshot-btn');
     elements.multiTabBtn = document.getElementById('multi-tab-btn');
     elements.contextMenu = document.getElementById('context-menu');
+    elements.removeDuplicatesBtn = document.getElementById('remove-duplicates-btn');
     elements.clearAllBtn = document.getElementById('clear-all-btn');
     elements.exportBtn = document.getElementById('export-btn');
     elements.importBtn = document.getElementById('import-btn');
