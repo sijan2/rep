@@ -110,14 +110,33 @@ document.addEventListener('DOMContentLoaded', () => {
     // Remove Duplicates Toggle
     if (elements.removeDuplicatesBtn) {
         // Load saved preference (default: true/enabled)
-        const removeDuplicatesEnabled = localStorage.getItem('rep_remove_duplicates') !== 'false';
+        const readRemoveDuplicatesPref = () => {
+            try {
+                return typeof localStorage !== 'undefined' && localStorage
+                    ? localStorage.getItem('rep_remove_duplicates') !== 'false'
+                    : true;
+            } catch {
+                return true;
+            }
+        };
+        const writeRemoveDuplicatesPref = (enabled) => {
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem('rep_remove_duplicates', enabled.toString());
+                }
+            } catch {
+                // ignore storage failures in restricted contexts
+            }
+        };
+
+        const removeDuplicatesEnabled = readRemoveDuplicatesPref();
         updateRemoveDuplicatesButton(removeDuplicatesEnabled);
         
         elements.removeDuplicatesBtn.addEventListener('click', () => {
-            const currentState = localStorage.getItem('rep_remove_duplicates') !== 'false';
+            const currentState = readRemoveDuplicatesPref();
             const newState = !currentState;
             
-            localStorage.setItem('rep_remove_duplicates', newState.toString());
+            writeRemoveDuplicatesPref(newState);
             updateRemoveDuplicatesButton(newState);
             
             // If enabling, remove existing duplicates

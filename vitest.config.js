@@ -7,7 +7,7 @@ export default defineConfig({
     // Environment - use jsdom for DOM-related tests
     environment: 'jsdom',
     // Setup files
-    setupFiles: [],
+    setupFiles: ['tests/setup.js'],
     // Coverage (optional, for future use)
     coverage: {
       exclude: [

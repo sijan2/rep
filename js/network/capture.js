@@ -95,7 +95,7 @@ export function setupNetworkListener(onRequestCaptured) {
         request.pageUrl = pageUrl;
         request.tabId = inspectedTabId;
         request.requestId = request.requestId || request._requestId || '';
-        request.resourceType = request.resourceType || request.type || '';
+        request.resourceType = request._resourceType || request.resourceType || request.type || '';
 
         // Fetch response content so we can show it without switching tabs
         request.getContent((body, encoding) => {

@@ -191,7 +191,12 @@ Host: example.com`;
     const result = parseRequest(rawContent, false);
 
     expect(result.method).toBe('GET');
-    expect(Object.keys(result.filteredHeaders).length).toBe(0);
+    // Host is stripped (forbidden); cache-busting headers are always injected
+    expect(result.filteredHeaders).toEqual({
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
   });
 
   it('should handle special characters in URL path', () => {
@@ -500,14 +505,15 @@ describe('Export/Import', () => {
     expect(exportedRequest).toHaveProperty('id');
     expect(exportedRequest.method).toBe('POST');
     expect(exportedRequest.url).toBe('https://example.com/api/login');
+    // Multi-value headers are exported as arrays (matches live-export / CLI format)
     expect(exportedRequest.headers).toEqual({
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer token'
+      'Content-Type': ['application/json'],
+      'Authorization': ['Bearer token']
     });
     expect(exportedRequest.body).toBe('{"username":"user"}');
     expect(exportedRequest.response.status).toBe(200);
     expect(exportedRequest.response.headers).toEqual({
-      'Content-Type': 'application/json'
+      'Content-Type': ['application/json']
     });
     expect(exportedRequest.response.body).toBe('{"success":true}');
     expect(exportedRequest.timestamp).toBe(1234567890);
@@ -712,14 +718,19 @@ describe('Export/Import', () => {
     const exportedData = JSON.parse(capturedBlobContent);
     const exportedRequest = exportedData.requests[0];
     
-    // Headers should be objects, not arrays
+    // Headers should be name -> string[] maps (not HAR-style [{name,value}] arrays)
     expect(typeof exportedRequest.headers).toBe('object');
     expect(Array.isArray(exportedRequest.headers)).toBe(false);
-    expect(exportedRequest.headers).toEqual({ Header1: 'Value1', Header2: 'Value2' });
+    expect(exportedRequest.headers).toEqual({
+      Header1: ['Value1'],
+      Header2: ['Value2'],
+    });
     
     expect(typeof exportedRequest.response.headers).toBe('object');
     expect(Array.isArray(exportedRequest.response.headers)).toBe(false);
-    expect(exportedRequest.response.headers).toEqual({ ResHeader1: 'ResValue1' });
+    expect(exportedRequest.response.headers).toEqual({
+      ResHeader1: ['ResValue1'],
+    });
   });
 });
 

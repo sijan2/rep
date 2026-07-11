@@ -7,6 +7,7 @@ import { buildStableRequestId } from '../core/utils/hash.js';
 
 const NATIVE_HOST = 'com.repplus.host';
 const DEBOUNCE_MS = 500;
+const MAX_BATCH_SIZE = 50;
 
 let port = null;
 let isEnabled = false;
@@ -267,12 +268,14 @@ function queueRequest(request, index) {
 function flushQueue() {
     if (requestQueue.length === 0) return;
 
-    // Send as batch
+    // Send in batches so large captures stay under native-messaging size limits
     const pending = requestQueue;
     requestQueue = [];
-    for (let i = 0; i < pending.length; i++) {
-        if (!sendMessage({ action: 'add', request: pending[i] })) {
-            requestQueue = [];
+    for (let i = 0; i < pending.length; i += MAX_BATCH_SIZE) {
+        const batch = pending.slice(i, i + MAX_BATCH_SIZE);
+        if (!sendMessage({ action: 'add_many', requests: batch })) {
+            // Re-queue anything not successfully sent, then force a full resync
+            requestQueue = pending.slice(i).concat(requestQueue);
             needsResync = true;
             break;
         }

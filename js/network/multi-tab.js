@@ -81,7 +81,7 @@ export function initMultiTabCapture() {
                         tabId: req.tabId || null,
                         requestId: req.requestId || null,
                         initiator: req.initiator || '',
-                        resourceType: req.type || req.resourceType || ''
+                        resourceType: req._resourceType || req.type || req.resourceType || ''
                     };
 
                     // Filter static resources

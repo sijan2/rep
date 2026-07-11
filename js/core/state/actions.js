@@ -7,6 +7,19 @@ import { events, EVENT_NAMES } from '../events.js';
 import { getHostname } from '../utils/network.js';
 
 /**
+ * Safe localStorage access — Node/test envs and some restricted contexts
+ * may leave localStorage undefined.
+ */
+function getLocalStorageItem(key) {
+    try {
+        if (typeof localStorage === 'undefined' || !localStorage) return null;
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Action creators for state mutations
  * All state changes should go through these functions to ensure:
  * 1. Events are automatically emitted
@@ -189,7 +202,7 @@ export const requestActions = {
         }
         
         // Check for duplicates if enabled (default: true)
-        const removeDuplicatesEnabled = localStorage.getItem('rep_remove_duplicates') !== 'false';
+        const removeDuplicatesEnabled = getLocalStorageItem('rep_remove_duplicates') !== 'false';
         if (removeDuplicatesEnabled && this.isDuplicate(request, state.requests)) {
             // Skip adding duplicate
             return null;
