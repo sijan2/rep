@@ -1,11 +1,13 @@
 {
     "manifest_version": 3,
     "name": "rep+",
-    "version": "1.3.2",
+    "version": "1.4.0",
     "description": "rep+ - Capture, modify, and replay HTTP requests in Chrome DevTools with AI-powered security analysis.",
     "permissions": [
+        "debugger",
         "nativeMessaging",
-        "storage"
+        "storage",
+        "tabs"
     ],
     "optional_permissions": [
         "webRequest"
@@ -23,7 +25,8 @@
     },
     "devtools_page": "devtools.html",
     "background": {
-        "service_worker": "background.js"
+        "service_worker": "background.js",
+        "type": "module"
     },
     "web_accessible_resources": [
         {

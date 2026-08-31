@@ -1,9 +1,67 @@
+import { NativeBridge } from './js/background/native-bridge.js';
+import { CDPCaptureController } from './js/background/cdp-capture.js';
+import { scheduleExtensionReload } from './js/background/runtime-control.js';
+import { buildStableRequestId } from './js/core/utils/hash.js';
+
 // Background service worker
 const ports = new Set();
+const nativeExportPorts = new Set();
 const requestMap = new Map();
+let nativeBridge;
+let captureController;
+let ambientWatching = false;
+let ambientSessionId = '';
+const ambientStateReady = (async () => {
+    try {
+        const stored = await chrome.storage.local.get({ repAmbientWatching: false, repAmbientSessionId: '' });
+        ambientWatching = Boolean(stored.repAmbientWatching);
+        ambientSessionId = ambientWatching ? String(stored.repAmbientSessionId || '') : '';
+    } catch (_) {
+        ambientWatching = false;
+        ambientSessionId = '';
+    }
+})();
+
+async function setAmbientWatching(value, sessionId = ambientSessionId) {
+    ambientWatching = Boolean(value);
+    ambientSessionId = ambientWatching ? String(sessionId || '') : '';
+    try {
+        await chrome.storage.local.set({
+            repAmbientWatching: ambientWatching,
+            repAmbientSessionId: ambientSessionId,
+        });
+    } catch (_) {
+        // Runtime state remains authoritative if storage is unavailable.
+    }
+}
+
+async function stopAmbientForExplicitCapture() {
+    if (!ambientWatching) return false;
+    await setAmbientWatching(false);
+    nativeBridge?.send({ action: 'ambient_end', capture_mode: 'ambient' });
+    return true;
+}
 
 // Handle connections from DevTools panels
 chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === 'rep-native-export') {
+        nativeExportPorts.add(port);
+        port.postMessage({
+            success: nativeBridge?.isConnected() || false,
+            action: 'bridge_status',
+            bridge: nativeBridge?.status() || { connected: false }
+        });
+        port.onMessage.addListener((message) => {
+            const sent = nativeBridge?.send(message) || false;
+            port.postMessage({
+                success: sent || Boolean(nativeBridge),
+                action: message?.action || 'forward',
+                queued: !sent
+            });
+        });
+        port.onDisconnect.addListener(() => nativeExportPorts.delete(port));
+        return;
+    }
     if (port.name !== "rep-panel") return;
     console.log("DevTools panel connected");
     ports.add(port);
@@ -318,7 +376,8 @@ function parseRequestBody(requestBody) {
 
 // Listener functions
 function handleBeforeRequest(details) {
-    if (ports.size === 0) return;
+    if (!shouldTrackBackgroundRequests()) return;
+    if (captureController?.isCapturingTab(details.tabId)) return;
     if (details.url.startsWith('chrome-extension://')) return;
 
     requestMap.set(details.requestId, {
@@ -335,7 +394,8 @@ function handleBeforeRequest(details) {
 }
 
 function handleBeforeSendHeaders(details) {
-    if (ports.size === 0) return;
+    if (!shouldTrackBackgroundRequests()) return;
+    if (captureController?.isCapturingTab(details.tabId)) return;
     const req = requestMap.get(details.requestId);
     if (req) {
         req.requestHeaders = details.requestHeaders;
@@ -343,33 +403,66 @@ function handleBeforeSendHeaders(details) {
 }
 
 function handleCompleted(details) {
-    if (ports.size === 0) return;
+    if (captureController?.isCapturingTab(details.tabId)) {
+        requestMap.delete(details.requestId);
+        return;
+    }
     const req = requestMap.get(details.requestId);
     if (req) {
         req.statusCode = details.statusCode;
         req.statusLine = details.statusLine;
         req.responseHeaders = details.responseHeaders;
-
-        const message = {
-            type: 'captured_request',
-            data: req
-        };
-
-        ports.forEach(p => {
-            try {
-                p.postMessage(message);
-            } catch (e) {
-                console.error('Error sending to port:', e);
-                ports.delete(p);
-            }
-        });
-
+        publishBackgroundRequest(req);
         requestMap.delete(details.requestId);
     }
 }
 
 function handleErrorOccurred(details) {
+    if (captureController?.isCapturingTab(details.tabId)) {
+        requestMap.delete(details.requestId);
+        return;
+    }
+    const req = requestMap.get(details.requestId);
+    if (req) {
+        req.errorText = details.error || 'network request failed';
+        req.statusCode = 0;
+        publishBackgroundRequest(req);
+    }
     requestMap.delete(details.requestId);
+}
+
+function handleBeforeRedirect(details) {
+    if (captureController?.isCapturingTab(details.tabId)) {
+        requestMap.delete(details.requestId);
+        return;
+    }
+    const req = requestMap.get(details.requestId);
+    if (!req) return;
+    req.statusCode = details.statusCode;
+    req.statusLine = details.statusLine;
+    req.responseHeaders = details.responseHeaders;
+    publishBackgroundRequest(req);
+    requestMap.delete(details.requestId);
+}
+
+function shouldTrackBackgroundRequests() {
+    return ports.size > 0 || ambientWatching;
+}
+
+function publishBackgroundRequest(req) {
+    const message = { type: 'captured_request', data: req };
+    ports.forEach((port) => {
+        try {
+            port.postMessage(message);
+        } catch (error) {
+            console.error('Error sending to port:', error);
+            ports.delete(port);
+        }
+    });
+    if (ambientWatching && captureController.sessions.size === 0) {
+        // NativeBridge queues bounded messages while its host reconnects.
+        nativeBridge?.send({ action: 'add', request: formatBackgroundRequest(req) });
+    }
 }
 
 function setupListeners() {
@@ -395,6 +488,13 @@ function setupListeners() {
                 ["responseHeaders"]
             );
         }
+        if (!chrome.webRequest.onBeforeRedirect.hasListener(handleBeforeRedirect)) {
+            chrome.webRequest.onBeforeRedirect.addListener(
+                handleBeforeRedirect,
+                { urls: ["<all_urls>"] },
+                ["responseHeaders"]
+            );
+        }
         if (!chrome.webRequest.onErrorOccurred.hasListener(handleErrorOccurred)) {
             chrome.webRequest.onErrorOccurred.addListener(
                 handleErrorOccurred,
@@ -406,6 +506,150 @@ function setupListeners() {
         console.log("WebRequest permission not granted");
     }
 }
+
+function formatBackgroundRequest(req) {
+    const timestamp = Math.round(req.timeStamp || Date.now());
+    return {
+        id: buildStableRequestId({
+            requestId: req.requestId,
+            tabId: req.tabId,
+            timestamp,
+            method: req.method,
+            url: req.url
+        }),
+        original_id: req.requestId || '',
+        method: req.method || 'GET',
+        url: req.url || '',
+        page_url: req.initiator || req.url || '',
+        resource_type: req.resourceType || req.type || '',
+        initiator: req.initiator || '',
+        headers: headerListToMap(req.requestHeaders),
+        body: req.requestBody || '',
+        response: {
+            status: req.statusCode || 0,
+            headers: headerListToMap(req.responseHeaders),
+            body: ''
+        },
+        error_text: req.errorText || '',
+        capture_source: 'webrequest',
+        tab_id: req.tabId,
+        timestamp
+    };
+}
+
+function headerListToMap(headers = []) {
+    const output = {};
+    for (const header of headers || []) {
+        if (!header?.name) continue;
+        output[header.name] ||= [];
+        output[header.name].push(header.value || '');
+    }
+    return output;
+}
+
+async function handleBrowserRPC(method, params) {
+    await ambientStateReady;
+    switch (method) {
+    case 'bridge.ping':
+        return { connected: true, extension_id: chrome.runtime.id, timestamp: Date.now() };
+    case 'browser.status':
+        return {
+            ...(await captureController.status(nativeBridge.status())),
+            ambient_watching: ambientWatching,
+            ambient_session_id: ambientSessionId || null,
+        };
+    case 'browser.tabs':
+        return { tabs: await captureController.listTabs() };
+    case 'browser.targets':
+        return { targets: await captureController.listTargets() };
+    case 'browser.attach':
+        return captureController.attachControl(params);
+    case 'browser.detach':
+        return captureController.detachControl(params);
+    case 'browser.cdp':
+        return captureController.sendCDP(params);
+    case 'browser.eval':
+        return captureController.evaluate(params);
+    case 'browser.action':
+        await stopAmbientForExplicitCapture();
+        return captureController.action(params);
+    case 'browser.probe':
+        return captureController.probeIdentity(params);
+    case 'browser.create':
+        return captureController.createTab(params);
+    case 'browser.open':
+        await stopAmbientForExplicitCapture();
+        return captureController.open(params);
+    case 'browser.fetch':
+        await stopAmbientForExplicitCapture();
+        return captureController.fetch(params);
+    case 'browser.close':
+        return captureController.closeTab(params);
+    case 'browser.reload-extension': {
+        captureController.beginReload();
+        try {
+            return scheduleExtensionReload();
+        } catch (error) {
+            captureController.cancelReload();
+            throw error;
+        }
+    }
+    case 'browser.watch.start': {
+        captureController.assertReloadNotPending('start ambient capture');
+        if (ambientWatching) {
+            return { watching: true, already_watching: true, session_id: ambientSessionId || null };
+        }
+        const sessionId = `ambient-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
+        await setAmbientWatching(true, sessionId);
+        nativeBridge.send({ action: 'ambient_begin', session_id: sessionId, capture_mode: 'ambient' });
+        return { watching: true, already_watching: false, session_id: sessionId };
+    }
+    case 'browser.watch.stop': {
+        if (!ambientWatching) return { watching: false, already_stopped: true };
+        const sessionId = ambientSessionId;
+        await setAmbientWatching(false);
+        nativeBridge.send({ action: 'ambient_end', capture_mode: 'ambient' });
+        return { watching: false, already_stopped: false, session_id: sessionId || null };
+    }
+    case 'browser.watch.status':
+        return { watching: ambientWatching, session_id: ambientSessionId || null };
+    default: {
+        const error = new Error(`Unknown browser RPC method: ${method}`);
+        error.code = 'method_not_found';
+        throw error;
+    }
+    }
+}
+
+function broadcastNativeMessage(message) {
+    for (const port of nativeExportPorts) {
+        try {
+            port.postMessage(message);
+        } catch (_) {
+            nativeExportPorts.delete(port);
+        }
+    }
+}
+
+function resumeAmbientIfNeeded() {
+    if (!ambientWatching) return;
+    nativeBridge.send({
+        action: 'ambient_resume',
+        session_id: ambientSessionId || undefined,
+        capture_mode: 'ambient',
+    });
+}
+
+captureController = new CDPCaptureController({
+    emit: (message) => nativeBridge.send(message)
+});
+nativeBridge = new NativeBridge({
+    onRPC: handleBrowserRPC,
+    onHostMessage: broadcastNativeMessage,
+    onConnected: resumeAmbientIfNeeded,
+});
+nativeBridge.start();
+ambientStateReady.then(resumeAmbientIfNeeded);
 
 // Initial setup
 setupListeners();

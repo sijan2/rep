@@ -19,6 +19,7 @@ rep+ operates entirely locally in your browser. All data is stored locally using
 The following data is stored locally on your device:
 
 - **Captured HTTP Requests**: Stored in memory only, cleared when you close DevTools
+- **CLI Live Captures** (Optional): Browser-bridge captures are written by the local `rep-host` native-messaging process to the user's local rep-cli data directory
 - **User Preferences**: Theme preference, dismissed banners
 - **AI API Keys** (Optional): If you choose to use AI features, your API keys are stored locally in `localStorage`
 - **Export Data**: Any exported request data is stored locally if you choose to save it
@@ -48,14 +49,23 @@ If you choose to use the AI-powered features (Request Explanation, Attack Vector
 - We have no access to this data
 - Please review Anthropic's and Google's privacy policies for how they handle your data
 
+### Browser-Control Permissions
+
+The CLI browser bridge requires these extension permissions:
+
+- **`debugger`**: Attaches Chrome DevTools Protocol sessions only when you invoke a browser-control or capture command
+- **`tabs`**: Lists browser tabs and creates or closes task-owned tabs for explicit commands
+- **`nativeMessaging`**: Exchanges local RPC and capture data with the installed `rep-host` process
+- **`storage`**: Stores extension preferences and ambient-capture state locally
+
 ### Optional Permissions
 
 rep+ requests optional permissions only when you explicitly enable features:
 
-- **`webRequest` + `<all_urls>`**: Only requested when you click the multi-tab capture button
-- These permissions allow the extension to capture network requests from all tabs
+- **`webRequest` + `<all_urls>`**: Requested when you enable multi-tab capture or grant cross-origin request access
+- These permissions allow the extension to capture requests from all tabs and replay requests to arbitrary HTTP(S) origins
 - You can revoke these permissions at any time through Chrome's extension settings
-- Without these permissions, rep+ only captures requests from the currently inspected tab
+- Without these permissions, DevTools capture for the currently inspected tab and explicit CLI control through `debugger` remain available; optional multi-tab/ambient capture is unavailable
 
 ## Data Security
 
@@ -82,4 +92,3 @@ For questions about this privacy policy, please open an issue on [GitHub](https:
 
 rep+ is open source. You can review the code to verify our privacy claims:
 - [GitHub Repository](https://github.com/bscript/rep)
-

@@ -5,7 +5,6 @@ import { state } from '../core/state/index.js';
 import { events, EVENT_NAMES } from '../core/events.js';
 import { buildStableRequestId } from '../core/utils/hash.js';
 
-const NATIVE_HOST = 'com.repplus.host';
 const DEBOUNCE_MS = 500;
 const MAX_BATCH_SIZE = 50;
 
@@ -154,7 +153,10 @@ function connectNativeHost() {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
-        port = chrome.runtime.connectNative(NATIVE_HOST);
+        // The background service worker owns the single native-messaging port.
+        // Panel contexts forward through it so reconnects never spawn competing
+        // rep-host processes or race while writing live.json.
+        port = chrome.runtime.connect({ name: 'rep-native-export' });
 
         port.onMessage.addListener((response) => {
             console.log('Native host response:', response);
@@ -340,6 +342,8 @@ function formatRequest(req, index) {
             body: req.responseBody || req.response?.content?.text || ''
         },
         response_encoding: req.responseEncoding || '',
+        capture_source: 'devtools',
+        tab_id: Number.isFinite(Number(tabId)) ? Number(tabId) : undefined,
         timestamp: timestamp
     };
 }
