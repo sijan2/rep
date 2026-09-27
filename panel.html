@@ -214,6 +214,9 @@
                                     <span style="font-size: 10px; margin-left: 2px;">▼</span>
                                 </button>
                                 <div id="ai-menu-dropdown" class="dropdown-content">
+                                    <button type="button" class="dropdown-item" id="jev-classify-btn">
+                                        <span>Classify traffic with Jev</span>
+                                    </button>
                                     <div class="dropdown-item" id="explain-btn">
                                         <span>✨ Explain Request</span>
                                     </div>
@@ -704,6 +707,21 @@
             </div>
             <div class="modal-footer">
                 <button id="save-settings-btn" class="primary-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Jev Traffic Classification Modal -->
+    <div id="jev-classification-modal" class="modal" role="dialog" aria-labelledby="jev-classification-title" aria-modal="true">
+        <div class="modal-content" style="width: 560px; max-width: 90vw;">
+            <div class="modal-header">
+                <h3 id="jev-classification-title">Jev traffic classification</h3>
+                <button type="button" class="close-modal" aria-label="Close Jev classification">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="jev-classification-request" style="overflow-wrap: anywhere;"></p>
+                <div id="jev-classification-content" role="status" aria-live="polite"></div>
+                <p class="help-text">Jev receives the selected request's minimized URL, method, resource type, response status, and content type. Headers, bodies, URL credentials, query values, and fragments are excluded. The API key stays in rep-host. Results below 80% confidence need review.</p>
             </div>
         </div>
     </div>

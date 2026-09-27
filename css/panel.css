@@ -2481,6 +2481,19 @@ pre {
     /* Slight movement effect */
 }
 
+button.dropdown-item {
+    width: 100%;
+    border: none;
+    background: transparent;
+    text-align: left;
+    font-family: inherit;
+}
+
+.dropdown-item:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
 /* Diff View Styles */
 .diff-add {
     background-color: #e6ffec;
@@ -5316,4 +5329,3 @@ pre {
         transform: translateX(0);
     }
 }
-

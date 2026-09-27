@@ -28,6 +28,7 @@ The package script automatically excludes:
 - ✅ Dev dependencies (`node_modules/`, `package.json`, `package-lock.json`)
 - ✅ Build config (`vitest.config.js`)
 - ✅ Git files (`.git/`, `.gitignore`)
+- ✅ Environment files (`.env`, `.env.*`, including nested files)
 - ✅ Documentation (`CONTRIBUTING.md`, `ARCHITECTURE_REVIEW.md`)
 - ✅ Build artifacts (`dist/`, `build/`, `coverage/`)
 
@@ -45,4 +46,3 @@ npm run build
 npm test          # Run tests
 npm run package   # Create zip
 ```
-

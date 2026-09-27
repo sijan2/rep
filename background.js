@@ -566,6 +566,14 @@ async function handleBrowserRPC(method, params) {
         return captureController.attachControl(params);
     case 'browser.detach':
         return captureController.detachControl(params);
+    case 'browser.lease.acquire':
+        return captureController.acquireLease(params);
+    case 'browser.lease.release':
+        return captureController.releaseLease(params);
+    case 'browser.observe':
+        return captureController.observe(params);
+    case 'browser.validate':
+        return captureController.validateObservation(params);
     case 'browser.cdp':
         return captureController.sendCDP(params);
     case 'browser.eval':
@@ -577,6 +585,10 @@ async function handleBrowserRPC(method, params) {
         return captureController.probeIdentity(params);
     case 'browser.create':
         return captureController.createTab(params);
+    case 'browser.navigate':
+        return captureController.navigate(params);
+    case 'browser.screenshot':
+        return captureController.screenshot(params);
     case 'browser.open':
         await stopAmbientForExplicitCapture();
         return captureController.open(params);
@@ -595,7 +607,7 @@ async function handleBrowserRPC(method, params) {
         }
     }
     case 'browser.watch.start': {
-        captureController.assertReloadNotPending('start ambient capture');
+        captureController.assertAmbientCanStart();
         if (ambientWatching) {
             return { watching: true, already_watching: true, session_id: ambientSessionId || null };
         }
@@ -641,12 +653,16 @@ function resumeAmbientIfNeeded() {
 }
 
 captureController = new CDPCaptureController({
-    emit: (message) => nativeBridge.send(message)
+    emit: (message) => nativeBridge.sendCapture(message),
+    capturePreflight: () => nativeBridge.assertCaptureReady(),
 });
 nativeBridge = new NativeBridge({
     onRPC: handleBrowserRPC,
     onHostMessage: broadcastNativeMessage,
-    onConnected: resumeAmbientIfNeeded,
+    onConnected: () => {
+        captureController.semantic.reconnect();
+        resumeAmbientIfNeeded();
+    },
 });
 nativeBridge.start();
 ambientStateReady.then(resumeAmbientIfNeeded);

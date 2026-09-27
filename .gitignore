@@ -5,6 +5,9 @@ build/
 *.log
 *.tmp
 temp/
+.env
+.env.*
+!.env.example
 
 # Test coverage (exclude from git, but keep test files)
 coverage/
@@ -19,4 +22,3 @@ coverage/
 # Packaging temp files
 .zip-files.txt
 rep-plus-extension.zip
-

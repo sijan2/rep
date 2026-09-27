@@ -22,6 +22,7 @@ import { setupLLMChat } from './features/llm-chat/index.js';
 import { handleSendRequest } from './network/handler.js';
 import { initSearch } from './search/index.js';
 import { initLiveExport } from './features/live-export.js';
+import { setupJevClassification } from './features/jev/index.js';
 
 // UI Modules
 import { setupBlockControls } from './ui/block-controls.js';
@@ -45,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initExtractorUI();
     setupBulkReplay();
     setupAIFeatures(elements);
+    setupJevClassification();
     setupLLMChat(elements);
     initSearch();
     initLiveExport();

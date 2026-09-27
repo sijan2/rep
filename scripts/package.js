@@ -26,7 +26,7 @@ try {
   // This is more reliable than zip's exclude patterns
   console.log('Collecting files to package...');
   
-  const findCommand = `find . -type f ! -path './.git/*' ! -path './node_modules/*' ! -path './tests/*' ! -path './scripts/*' ! -name '*.test.js' ! -name '*.spec.js' ! -name 'package.json' ! -name 'package-lock.json' ! -name 'vitest.config.js' ! -name '.gitignore' ! -name 'ARCHITECTURE_REVIEW.md' ! -name 'CONTRIBUTING.md' ! -name 'rep-plus-extension.zip' ! -name '.DS_Store'`;
+  const findCommand = `find . -type f ! -path './.git/*' ! -path './node_modules/*' ! -path './tests/*' ! -path './scripts/*' ! -name '.env' ! -name '.env.*' ! -name '*.test.js' ! -name '*.spec.js' ! -name 'package.json' ! -name 'package-lock.json' ! -name 'vitest.config.js' ! -name '.gitignore' ! -name 'ARCHITECTURE_REVIEW.md' ! -name 'CONTRIBUTING.md' ! -name 'rep-plus-extension.zip' ! -name '.DS_Store'`;
   
   const files = execSync(findCommand, { 
     encoding: 'utf-8',
@@ -75,6 +75,7 @@ try {
   console.log('   - Dev dependencies (node_modules/, package.json)');
   console.log('   - Build config (vitest.config.js)');
   console.log('   - Git files (.git/, .gitignore)');
+  console.log('   - Environment files (.env, .env.*)');
   console.log('   - Documentation (CONTRIBUTING.md, ARCHITECTURE_REVIEW.md)');
   console.log('   - Scripts folder (scripts/)');
   console.log('\n🚀 Ready to upload to Chrome Web Store!');

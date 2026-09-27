@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TextDecoder, TextEncoder } from 'node:util';
 import {
     buildFetchExpression,
     buildIdentityProbeExpression,
@@ -37,7 +38,22 @@ describe('browser capture helpers', () => {
         });
     });
 
-    it('builds a credentialed, bounded fetch expression', () => {
+    it('bounds streamed response bytes, preserves incomplete UTF-8 as base64, and releases the reader', async () => {
+        const bytes = new TextEncoder().encode('A😀BC');
+        const reader = {
+            read: vi.fn()
+                .mockResolvedValueOnce({ done: false, value: bytes.slice(0, 3) })
+                .mockResolvedValueOnce({ done: false, value: bytes.slice(3) })
+                .mockRejectedValue(new Error('The byte limit should stop further reads')),
+            cancel: vi.fn().mockResolvedValue(undefined),
+            releaseLock: vi.fn(),
+        };
+        const fetch = vi.fn().mockResolvedValue({
+            ok: true, status: 200, statusText: 'OK', url: 'https://example.com/api',
+            redirected: false, type: 'basic',
+            headers: new Map([['content-type', 'text/plain; charset=utf-8']]),
+            body: { getReader: () => reader },
+        });
         const expression = buildFetchExpression({
             url: 'https://example.com/api',
             method: 'POST',
@@ -45,16 +61,48 @@ describe('browser capture helpers', () => {
             body: '{}',
             credentials: 'include',
             cache: 'default',
-            maxBodyBytes: 1024,
-            headersOnly: true,
+            maxBodyBytes: 4,
         });
-        expect(expression).toContain("credentials: options.credentials");
-        expect(expression).toContain("cache: options.cache || 'default'");
-        expect(expression).toContain('text.slice(0, limit)');
-        expect(expression).toContain('options.headersOnly');
-        expect(expression).toContain("response.body?.cancel()");
-        expect(expression).toContain('body_omitted: true');
-        expect(expression).toContain('https://example.com/api');
+        const run = new Function('fetch', 'TextDecoder', 'TextEncoder', `return ${expression};`);
+        const response = await run(fetch, TextDecoder, TextEncoder);
+
+        expect(fetch).toHaveBeenCalledWith('https://example.com/api', {
+            method: 'POST', headers: { 'x-test': '1' }, body: '{}',
+            credentials: 'include', redirect: 'follow', cache: 'default', signal: expect.any(Object),
+        });
+        expect(response).toMatchObject({
+            status: 200, body: 'QfCfmA==', body_bytes: 4, body_encoding: 'base64',
+            body_observed_bytes: bytes.byteLength,
+            body_declared_bytes: null, body_truncated: true,
+        });
+        expect(reader.read).toHaveBeenCalledTimes(2);
+        expect(reader.cancel).toHaveBeenCalledOnce();
+        expect(reader.releaseLock).toHaveBeenCalledOnce();
+    });
+
+    it('cancels headers-only responses without reading their bodies', async () => {
+        const body = {
+            cancel: vi.fn().mockResolvedValue(undefined),
+            getReader: vi.fn(),
+        };
+        const fetch = vi.fn().mockResolvedValue({
+            ok: true, status: 200, statusText: 'OK', url: 'https://example.com/api',
+            redirected: false, type: 'basic',
+            headers: new Map([['content-length', '1000000']]),
+            body,
+        });
+        const expression = buildFetchExpression({
+            url: 'https://example.com/api', method: 'GET',
+            maxBodyBytes: 4, headersOnly: true,
+        });
+        const response = await new Function('fetch', `return ${expression};`)(fetch);
+
+        expect(response).toMatchObject({
+            status: 200, body: '', body_bytes: 0,
+            body_declared_bytes: 1000000, body_truncated: true, body_omitted: true,
+        });
+        expect(body.cancel).toHaveBeenCalledOnce();
+        expect(body.getReader).not.toHaveBeenCalled();
     });
 
     it('builds a native identity probe without rewriting browser globals', () => {
@@ -77,6 +125,8 @@ describe('browser capture helpers', () => {
             captured_body_bytes: 3,
             failed_requests: 1,
             ignored_cancellations: 0,
+            pending_network_requests: 0,
+            body_capture_states: { complete: 0, partial: 0, unavailable: 0, pending: 0, not_applicable: 0, unknown: 2 },
         });
         expect(summarizeRequests([
             {
@@ -568,6 +618,49 @@ describe('credentialed browser fetch', () => {
             completion_ordinal: 3,
         });
         expect(added.requests[0]).not.toHaveProperty('error_text');
+    });
+});
+
+describe('ambient capture exclusion', () => {
+    it('refuses both queued and active explicit captures until they finish', async () => {
+        const controller = new CDPCaptureController({
+            chromeApi: { debugger: { onEvent: eventHook(), onDetach: eventHook() } },
+        });
+        let releaseFirst;
+        const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+        const first = controller.runExplicitCapture({ timeout_ms: 10000 }, 'first fixture', () => firstGate);
+        expect(controller.queuedCaptures).toBe(1);
+        expect(() => controller.assertAmbientCanStart()).toThrow('explicit captures are active or queued');
+        await Promise.resolve();
+        expect(controller.captureOperationActive).toBe(true);
+        expect(() => controller.assertAmbientCanStart()).toThrow('explicit captures are active or queued');
+
+        let releaseSecond;
+        const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+        const second = controller.runExplicitCapture({ timeout_ms: 10000 }, 'second fixture', () => secondGate);
+        expect(controller.queuedCaptures).toBe(1);
+        expect(() => controller.assertAmbientCanStart()).toThrow('explicit captures are active or queued');
+        releaseFirst();
+        await first;
+        await Promise.resolve();
+        expect(controller.captureOperationActive).toBe(true);
+        expect(() => controller.assertAmbientCanStart()).toThrow('explicit captures are active or queued');
+        releaseSecond();
+        await second;
+        expect(() => controller.assertAmbientCanStart()).not.toThrow();
+    });
+
+    it('respects reload and attached capture state without modifying either', () => {
+        const controller = new CDPCaptureController({
+            chromeApi: { debugger: { onEvent: eventHook(), onDetach: eventHook() } },
+        });
+        controller.sessions.set(12, { id: 'owned-session' });
+        expect(() => controller.assertAmbientCanStart()).toThrow('explicit captures are active or queued');
+        expect(controller.sessions.get(12)).toEqual({ id: 'owned-session' });
+        controller.sessions.clear();
+        controller.beginReload();
+        expect(() => controller.assertAmbientCanStart()).toThrow('extension reload is pending');
+        expect(controller.reloadPending).toBe(true);
     });
 });
 

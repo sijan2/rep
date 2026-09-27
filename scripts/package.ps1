@@ -7,7 +7,7 @@ $zipName = "rep-plus-extension.zip"
 # Get all files and explicitly exclude directories and files
 $excludeDirs = @("tests", "node_modules", "scripts", ".git", "dist", "build", "coverage", ".nyc_output", "temp")
 $excludeFiles = @("package.json", "package-lock.json", "vitest.config.js", ".gitignore", "ARCHITECTURE_REVIEW.md", "CONTRIBUTING.md", "rep-plus-extension.zip")
-$excludePatterns = @("*.test.js", "*.spec.js", "*.log", "*.tmp", ".DS_Store")
+$excludePatterns = @("*.test.js", "*.spec.js", "*.log", "*.tmp", ".DS_Store", ".env", ".env.*")
 
 Write-Host "📦 Creating production package for Chrome Web Store...`n" -ForegroundColor Cyan
 
@@ -59,7 +59,7 @@ Write-Host "   - Test files (tests/, *.test.js, *.spec.js)"
 Write-Host "   - Dev dependencies (node_modules/, package.json)"
 Write-Host "   - Build config (vitest.config.js)"
 Write-Host "   - Git files (.git/, .gitignore)"
+Write-Host "   - Environment files (.env, .env.*)"
 Write-Host "   - Documentation (CONTRIBUTING.md, ARCHITECTURE_REVIEW.md)"
 Write-Host "`n🚀 Ready to upload to Chrome Web Store!" -ForegroundColor Green
-
 
