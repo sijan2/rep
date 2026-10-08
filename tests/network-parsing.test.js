@@ -558,7 +558,7 @@ describe('Export/Import', () => {
         }, 0);
       })
     };
-    global.FileReader = vi.fn(() => mockFileReader);
+    global.FileReader = vi.fn(function FileReader() { return mockFileReader; });
     global.alert = vi.fn();
 
     const file = { name: 'test.json' };
@@ -604,7 +604,7 @@ describe('Export/Import', () => {
         }, 0);
       })
     };
-    global.FileReader = vi.fn(() => mockFileReader);
+    global.FileReader = vi.fn(function FileReader() { return mockFileReader; });
     global.alert = vi.fn();
 
     const file = { name: 'test.json' };
@@ -642,16 +642,15 @@ describe('Export/Import', () => {
         }, 0);
       })
     };
-    global.FileReader = vi.fn(() => mockFileReader);
+    global.FileReader = vi.fn(function FileReader() { return mockFileReader; });
     global.alert = vi.fn();
-    global.console = { error: vi.fn() };
 
     const file = { name: 'test.json' };
     importRequests(file);
 
     return new Promise(resolve => {
       setTimeout(() => {
-        expect(global.console.error).toHaveBeenCalled();
+        expect(console.error).toHaveBeenCalled();
         expect(state.requests.length).toBe(0);
         resolve();
       }, 10);
