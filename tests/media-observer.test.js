@@ -41,10 +41,14 @@ function mediaFixture(config = {}, recorderOptions = {}) {
             constructor(track) { this.track = track; }
             replaceTrack(track) { this.lastPromise = this.rejectReplace ? Promise.reject(new Error('replace rejected')) : Promise.resolve().then(() => { this.track = track; }); return this.lastPromise; }
         };
+        globalThis.RTCRtpTransceiver = class RTCRtpTransceiver {
+            constructor(sender) { this.sender = sender; this.stopped = false; }
+            stop() { if (this.rejectStop) throw new Error('transceiver stop rejected'); this.stopped = true; }
+        };
         globalThis.RTCPeerConnection = class RTCPeerConnection extends Target {
             constructor(options = {}) { super(); this.senders = []; this.receivers = options.receivers || []; this.connectionState = 'new'; }
             addTrack(track) { const sender = new RTCRtpSender(track); this.senders.push(sender); return sender; }
-            addTransceiver(track) { const sender = new RTCRtpSender(typeof track === 'string' ? null : track); this.senders.push(sender); return { sender }; }
+            addTransceiver(track) { const sender = new RTCRtpSender(typeof track === 'string' ? null : track); this.senders.push(sender); return new RTCRtpTransceiver(sender); }
             getSenders() { return this.senders; }
             getReceivers() { return this.receivers; }
             receive(track) { const receiver = { track }; this.receivers.push(receiver); this.fire('track', { track, receiver }); return receiver; }
@@ -228,6 +232,67 @@ describe('native WebRTC media recording', () => {
         expect(track.stopCalls).toBe(0);
         await h.stop();
         expect(h.events().at(-1).metadata.stop_reason).toBe('track_removed');
+    });
+
+    it('stops an outgoing interval when its last transceiver stops without stopping the source', async () => {
+        const h = mediaFixture();
+        const peer = h.peer(), track = h.track();
+        const one = peer.addTransceiver(track), two = peer.addTransceiver(track);
+        expect(h.recorders()).toHaveLength(1);
+        one.stop();
+        expect(one.stopped).toBe(true);
+        expect(h.recorders()[0].stopCalls).toBe(0);
+        two.stop();
+        await tick();
+        expect(h.recorders()[0].stopCalls).toBe(1);
+        expect(h.events().at(-1)).toMatchObject({ kind: 'closed', metadata: { stop_reason: 'transceiver_stopped', recorder_finalized: true } });
+        expect(track.readyState).toBe('live');
+        expect(track.stopCalls).toBe(0);
+        expect(track.clones[0].stopCalls).toBe(1);
+        await h.stop();
+    });
+
+    it('preserves recording when the native transceiver refuses to stop', async () => {
+        const h = mediaFixture();
+        const track = h.track();
+        const transceiver = h.peer().addTransceiver(track);
+        transceiver.rejectStop = true;
+        expect(() => transceiver.stop()).toThrow('transceiver stop rejected');
+        expect(h.recorders()[0].stopCalls).toBe(0);
+        expect(h.control.info().media_active).toBe(1);
+        await h.stop();
+        expect(h.events().at(-1).metadata.stop_reason).toBe('capture_ended');
+    });
+
+    it('releases peer listeners on close even when native close fires no state event', async () => {
+        const h = mediaFixture();
+        const peer = h.peer(), track = h.track();
+        peer.addTrack(track);
+        const applicationListener = () => {};
+        peer.addEventListener('track', applicationListener);
+        peer.close();
+        expect([...peer.listeners.values()].flatMap(listeners => [...listeners])).toEqual([applicationListener]);
+        await tick();
+        expect(h.events().at(-1)).toMatchObject({ kind: 'closed', metadata: { stop_reason: 'peer_closed' } });
+        expect(track.stopCalls).toBe(0);
+        await h.stop();
+    });
+
+    it.each(['peer', 'transceiver'])('does not restart an encoder after an in-flight replacement and %s close', async ending => {
+        const h = mediaFixture();
+        const peer = h.peer(), first = h.track('audio', 'first'), second = h.track('audio', 'second');
+        const transceiver = peer.addTransceiver(first);
+        const replacement = transceiver.sender.replaceTrack(second);
+        if (ending === 'peer') peer.close();
+        else transceiver.stop();
+        await replacement;
+        await tick();
+        expect(h.recorders()).toHaveLength(1);
+        expect(second.clones).toHaveLength(0);
+        expect(h.control.info().media_active).toBe(0);
+        expect(first.stopCalls).toBe(0);
+        expect(second.stopCalls).toBe(0);
+        await h.stop();
     });
 
     it('honors original end and native stop while never stopping original tracks itself', async () => {

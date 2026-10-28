@@ -9,6 +9,9 @@ const DEFAULT_IDLE_MS = 800;
 const DEFAULT_BODY_LIMIT = 8 * 1024 * 1024;
 const MAX_BODY_LIMIT = 256 * 1024 * 1024;
 const BODY_DRAIN_MS = 5000;
+// Load grace may extend this far while pending loads keep making progress.
+const MAX_GRACE_EXTENSION_MS = 15000;
+const NETWORK_PROGRESS_EVENTS = new Set(['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed']);
 const DEFAULT_ACTION_RESULT_LIMIT = 64 * 1024;
 const MAX_ACTION_RESULT_LIMIT = 256 * 1024;
 const DEFAULT_ACTION_SETTLE_MS = 1500;
@@ -64,7 +67,7 @@ export class CDPCaptureController extends BrowserRuntime {
                 'captured_action', 'native_browser_identity', 'extension_self_reload',
                 'streamed_response_bodies', 'body_capture_diagnostics', 'related_target_capture', 'fragmented_request_transport',
                 'lifecycle_navigation', 'page_screenshot',
-                'websocket_records_v1', 'webtransport_lifecycle_v1', 'protocol_payloads_v1', 'webrtc_media_v1', 'network_metadata', 'incremental_capture', 'capture_budgets',
+                'websocket_records_v1', 'websocket_wait_close_v1', 'webtransport_lifecycle_v1', 'protocol_payloads_v1', 'webrtc_media_v1', 'network_metadata', 'incremental_capture', 'capture_budgets',
             ],
         };
     }
@@ -148,6 +151,10 @@ export class CDPCaptureController extends BrowserRuntime {
         const settleMs = Math.min(requestedSettleMs, Math.max(0, timeoutMs - idleMs));
         const maxBodyBytes = responseBodyLimit(params.max_body_bytes);
         const maxResultBytes = clampInteger(params.max_result_bytes, DEFAULT_ACTION_RESULT_LIMIT, 0, MAX_ACTION_RESULT_LIMIT);
+        // An action that awaits its own responses knows when it is complete.
+        // Pages with long polls or streaming connections never become idle, so
+        // such an action ends after the settle window instead of at the deadline.
+        const completeAfterSettle = params.complete_after_settle === true;
         const session = await this.startSession(debuggee.tabId, {
             url: tab.url || tab.pendingUrl || 'about:blank',
             timeoutMs,
@@ -184,6 +191,12 @@ export class CDPCaptureController extends BrowserRuntime {
             // bounded minimum window, then require the ordinary idle period.
             session.observeFor(settleMs);
             session.checkIdle();
+            if (completeAfterSettle) {
+                setTimeout(() => {
+                    if (session.done) return;
+                    session.finish({ timedOut: false, reason: 'operation-complete', pendingRequests: session.blocking.size });
+                }, settleMs);
+            }
             captureResult = await session.settled;
         } catch (error) {
             session.fail(error);
@@ -221,6 +234,10 @@ export class CDPCaptureController extends BrowserRuntime {
         const timeoutMs = clampInteger(params.timeout_ms, DEFAULT_TIMEOUT_MS, 1, 120000);
         const idleMs = clampInteger(params.idle_ms, DEFAULT_IDLE_MS, 100, 10000);
         const maxBodyBytes = responseBodyLimit(params.max_body_bytes);
+        const waitWebSocket = String(params.wait_websocket || '').trim();
+        if (waitWebSocket.length > 2048) {
+            throw rpcError('invalid_argument', 'wait_websocket exceeds 2048 characters');
+        }
         const active = Boolean(params.active);
         const keepTab = Boolean(params.keep_tab);
         const requestedTabId = params.tab_id == null ? null : Number(params.tab_id);
@@ -249,6 +266,7 @@ export class CDPCaptureController extends BrowserRuntime {
                 limits: captureLimits(params),
                 protocolPayloads: params.protocol_payloads === true,
                 webrtcMedia: params.webrtc_media === true,
+                waitWebSocket,
             });
 
             try {
@@ -720,6 +738,7 @@ export class CDPCaptureController extends BrowserRuntime {
             params = { ...params, rawRequestId: params.requestId, requestId: routed, debuggee: { tabId, sessionId: source.sessionId } };
         }
 
+        if (NETWORK_PROGRESS_EVENTS.has(method)) session.lastNetworkProgressAt = Date.now();
         switch (method) {
         case 'Target.detachedFromTarget':
             for (const record of session.sourceRecords.get(params.sessionId) || []) {
@@ -1175,6 +1194,11 @@ export class CDPCaptureController extends BrowserRuntime {
             session.current.set(params.requestId, record);
         }
         if (record.record_kind !== 'websocket') { session.warnings.add('websocket_identity_conflict'); return; }
+        if (created && session.waitWebSocket && !record.waitForCaptureClose && record.url.includes(session.waitWebSocket)) {
+            record.waitForCaptureClose = true;
+            session.waitWebSocketSeen = true;
+            session.openWaitWebSockets += 1;
+        }
         if (record.exportQueued) {
             session.observedEvents += 1;
             session.droppedEvents += 1;
@@ -1221,6 +1245,10 @@ export class CDPCaptureController extends BrowserRuntime {
         }
         this.appendStreamEvent(session, record, event, sourcePayload, binary);
         if (method === 'Network.webSocketClosed') {
+            if (record.waitForCaptureClose && !record.waitForCaptureCloseFinished) {
+                record.waitForCaptureCloseFinished = true;
+                session.openWaitWebSockets = Math.max(0, session.openWaitWebSockets - 1);
+            }
             this.finishStreamRecord(session, record);
             this.queueCompletedRecord(session, record);
         }
@@ -1305,6 +1333,9 @@ function createCaptureSession(tabId, options) {
         exportedRecords: 0,
         collectionStopped: false,
         idleMs: options.idleMs,
+        waitWebSocket: String(options.waitWebSocket || ''),
+        waitWebSocketSeen: false,
+        openWaitWebSockets: 0,
         loaded: options.captureMode === 'fetch',
         attached: false,
         detachOnFinish: true,
@@ -1326,6 +1357,7 @@ function createCaptureSession(tabId, options) {
         blocking: new Set(),
         bodyPromises: new Set(),
         idleTimer: null,
+        lastNetworkProgressAt: 0,
         observeUntil: 0,
         graceTimer: null,
         timeoutTimer: null,
@@ -1344,6 +1376,9 @@ function createCaptureSession(tabId, options) {
             this.idleTimer = null;
         },
         checkIdle() {
+            if (this.waitWebSocket && (!this.waitWebSocketSeen || this.openWaitWebSockets > 0)) {
+                return;
+            }
             if (this.done || !this.loaded || this.blocking.size > 0 || this.idleTimer) return;
             const observationRemaining = Math.max(0, this.observeUntil - Date.now());
             const delayMs = Math.max(this.idleMs, observationRemaining);
@@ -1357,12 +1392,25 @@ function createCaptureSession(tabId, options) {
             this.cancelIdle();
         },
         startGrace(delayMs) {
+            if (this.waitWebSocket) return;
             if (this.done || this.graceTimer) return;
-            this.graceTimer = setTimeout(() => this.finish({
-                timedOut: false,
-                reason: 'load-grace',
-                pendingRequests: this.blocking.size,
-            }), delayMs);
+            const extendUntil = Date.now() + delayMs + MAX_GRACE_EXTENSION_MS;
+            const expire = () => {
+                this.graceTimer = null;
+                // A silent long poll still ends the capture here, but lazy
+                // loads that are still completing get to finish first.
+                const quietMs = Date.now() - this.lastNetworkProgressAt;
+                if (this.blocking.size > 0 && quietMs < this.idleMs && Date.now() < extendUntil) {
+                    this.graceTimer = setTimeout(expire, this.idleMs - quietMs);
+                    return;
+                }
+                this.finish({
+                    timedOut: false,
+                    reason: 'load-grace',
+                    pendingRequests: this.blocking.size,
+                });
+            };
+            this.graceTimer = setTimeout(expire, delayMs);
         },
         stopTimer() {
             this.cancelIdle();

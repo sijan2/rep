@@ -25,6 +25,7 @@ export class SemanticRuntime {
         this.runtime = runtime;
         this.sessions = new Map();
         this.creating = new Map();
+        this.cancelledAcquisitions = new Map();
         this.boundEvent = (source, method, params) => this.onEvent(source, method, params || {});
         runtime.chrome.debugger.onEvent?.addListener(this.boundEvent);
     }
@@ -157,11 +158,25 @@ export class SemanticRuntime {
     async acquire(params) {
         this.validateOwner(params);
         if (!['observe', 'execute'].includes(params.purpose)) throw failure('invalid_argument', 'lease purpose must be observe or execute');
+        if (params.request_id !== undefined && !/^l_[a-f0-9]{32}$/.test(params.request_id)) throw failure('invalid_argument', 'invalid lease acquisition ID');
+        if (params.deadline_ms !== undefined && !Number.isSafeInteger(params.deadline_ms)) throw failure('invalid_argument', 'invalid lease acquisition deadline');
+        const requestKey = JSON.stringify([params.tab_id, params.owner, params.request_id]);
+        const checkAcquisition = () => {
+            if (params.deadline_ms !== undefined && Date.now() >= params.deadline_ms) throw failure('lease_acquisition_expired', 'lease acquisition deadline elapsed; no lease was allocated');
+            if (params.request_id && this.cancelledAcquisitions.has(requestKey)) throw failure('lease_acquisition_cancelled', 'lease acquisition was cancelled before acknowledgment');
+        };
+        checkAcquisition();
         if (params.purpose === 'execute' && this.runtime.isCapturingTab(params.tab_id)) throw failure('tab_busy', 'tab has an active capture');
         const session = await this.ensure(params.tab_id);
+        checkAcquisition();
         this.expireLeases(session);
+        if (params.request_id && session.leases.has(params.request_id)) {
+            const existing = session.leases.get(params.request_id);
+            if (existing.owner !== params.owner || existing.purpose !== params.purpose) throw failure('invalid_lease', 'acquisition ID belongs to a different lease');
+            return { lease_id: params.request_id, generation: session.generation };
+        }
         if (params.purpose === 'execute' && [...session.leases.values()].some(lease => lease.purpose === 'execute')) throw failure('tab_busy', 'tab has an active execution owner');
-        const id = token();
+        const id = params.request_id || token();
         session.leases.set(id, { owner: params.owner, purpose: params.purpose, expires: Date.now() + LEASE_MS });
         session.lastUsed = Date.now();
         this.scheduleCleanup(session);
@@ -182,6 +197,15 @@ export class SemanticRuntime {
 
     async release(params) {
         this.validateOwner(params);
+        // A timeout can arrive while attach/enable is still in flight. Remember
+        // cancellation before consulting sessions so that late acquire cannot
+        // strand an execution lease for two minutes.
+        const requestKey = JSON.stringify([params.tab_id, params.owner, params.lease_id]);
+        if (/^l_[a-f0-9]{32}$/.test(params.lease_id || '')) {
+            this.cancelledAcquisitions.set(requestKey, Date.now());
+            for (const [key, at] of this.cancelledAcquisitions) if (Date.now() - at > LEASE_MS) this.cancelledAcquisitions.delete(key);
+            while (this.cancelledAcquisitions.size > 256) this.cancelledAcquisitions.delete(this.cancelledAcquisitions.keys().next().value);
+        }
         const session = this.sessions.get(params.tab_id);
         if (!session) return { released: false };
         const lease = session.leases.get(params.lease_id);

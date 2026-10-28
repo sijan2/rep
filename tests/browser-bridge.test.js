@@ -439,6 +439,53 @@ describe('captured page actions', () => {
         expect(controller.sessions.size).toBe(0);
     });
 
+    it('ends an action after its settle window when the operation declares completion, even with a long poll open', async () => {
+        const onEvent = eventHook();
+        const onDetach = eventHook();
+        const emitted = [];
+        const chromeApi = {
+            runtime: { lastError: null },
+            tabs: {
+                get(tabId, callback) { callback({ id: tabId, url: 'https://example.test/feed', status: 'complete' }); },
+            },
+            debugger: {
+                onEvent,
+                onDetach,
+                attach(debuggee, version, callback) { callback(); },
+                detach(debuggee, callback) { callback(); },
+                sendCommand(debuggee, method, params, callback) {
+                    if (method === 'Runtime.evaluate') callback({ result: { type: 'object', value: { variants: 2 } } });
+                    else callback({});
+                },
+            },
+        };
+        const controller = new CDPCaptureController({ chromeApi, emit: (message) => emitted.push(message) });
+        const started = Date.now();
+        const action = controller.action({
+            tab_id: 42,
+            expression: 'fanout()',
+            timeout_ms: 5000,
+            idle_ms: 100,
+            settle_ms: 200,
+            complete_after_settle: true,
+            max_body_bytes: 1024,
+        });
+        // A chat long poll that never finishes would block network idle forever.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        onEvent.emit({ tabId: 42 }, 'Network.requestWillBeSent', {
+            requestId: 'long-poll',
+            wallTime: Date.now() / 1000,
+            type: 'Fetch',
+            request: { method: 'GET', url: 'https://example.test/sync?timeout=30000', headers: {} },
+            initiator: { type: 'script' },
+        });
+        const result = await action;
+        expect(Date.now() - started).toBeLessThan(2500);
+        expect(result).toMatchObject({ tab_id: 42, load_state: 'operation-complete', timed_out: false, pending_requests: 1 });
+        expect(emitted.map((message) => message.action)).toContain('session_end');
+        expect(controller.sessions.size).toBe(0);
+    });
+
     it('does not count a browser-managed attachment handoff as a failed action request', async () => {
         const onEvent = eventHook();
         const onDetach = eventHook();
@@ -760,5 +807,87 @@ describe('native bridge', () => {
 
         expect(sent.map((message) => message.action)).toEqual(['hello', 'ambient_resume', 'add']);
         bridge.stop();
+    });
+});
+
+describe('navigation load grace', () => {
+    function gracefulPage({ chunkFinishTimes }) {
+        const onEvent = eventHook();
+        const onDetach = eventHook();
+        const emitted = [];
+        const request = (source, requestId, type, url) => onEvent.emit(source, 'Network.requestWillBeSent', {
+            requestId, wallTime: Date.now() / 1000, type, request: { method: 'GET', url, headers: {} }, initiator: { type: 'parser' },
+        });
+        const finish = (source, requestId, type) => {
+            onEvent.emit(source, 'Network.responseReceived', { requestId, type, response: { status: 200, headers: {} } });
+            onEvent.emit(source, 'Network.loadingFinished', { requestId, encodedDataLength: 2 });
+        };
+        const chromeApi = {
+            runtime: { lastError: null },
+            tabs: {
+                create(options, callback) { callback({ id: 7, windowId: 1, active: false, status: 'loading', url: options.url }); },
+                get(tabId, callback) { callback({ id: tabId, url: 'https://lazy.example/', status: 'complete' }); },
+                remove(tabId, callback) { callback(); },
+            },
+            debugger: {
+                onEvent,
+                onDetach,
+                attach(debuggee, version, callback) { callback(); },
+                detach(debuggee, callback) { callback(); },
+                sendCommand(debuggee, method, params, callback) {
+                    if (method === 'Page.navigate') {
+                        const source = { tabId: debuggee.tabId };
+                        request(source, 'doc', 'Document', 'https://lazy.example/');
+                        finish(source, 'doc', 'Document');
+                        // A long poll that never completes keeps the page from going idle.
+                        request(source, 'poll', 'XHR', 'https://lazy.example/poll');
+                        chunkFinishTimes.forEach((_, index) => request(source, `chunk-${index}`, 'Script', `https://lazy.example/chunk-${index}.js`));
+                        onEvent.emit(source, 'Page.loadEventFired', {});
+                        chunkFinishTimes.forEach((ms, index) => setTimeout(() => finish(source, `chunk-${index}`, 'Script'), ms));
+                        callback({ frameId: 'frame', loaderId: 'loader' });
+                    } else if (method === 'Network.getResponseBody') {
+                        callback({ body: 'ok', base64Encoded: false });
+                    } else callback({});
+                },
+            },
+        };
+        const controller = new CDPCaptureController({ chromeApi, emit: (message) => emitted.push(message) });
+        return { controller, emitted };
+    }
+
+    function capturedScripts(emitted) {
+        return emitted.flatMap((message) => message.requests || [])
+            .filter((record) => /chunk-\d+\.js$/.test(record.url))
+            .map((record) => record.response_body_capture?.state);
+    }
+
+    it('keeps capturing past the load grace while pending loads are still completing', async () => {
+        vi.useFakeTimers();
+        try {
+            const { controller, emitted } = gracefulPage({ chunkFinishTimes: [600, 1200, 1800, 2400, 3000, 3600, 4200] });
+            const opened = controller.open({ url: 'https://lazy.example/', timeout_ms: 30000, idle_ms: 800 });
+            await vi.advanceTimersByTimeAsync(30000);
+            const result = await opened;
+            expect(result.timed_out).toBe(false);
+            expect(capturedScripts(emitted)).toEqual(Array(7).fill('complete'));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('still ends at the load grace when only a silent long poll is pending', async () => {
+        vi.useFakeTimers();
+        try {
+            const { controller } = gracefulPage({ chunkFinishTimes: [] });
+            const started = Date.now();
+            const opened = controller.open({ url: 'https://lazy.example/', timeout_ms: 30000, idle_ms: 800 });
+            let finishedAt = 0;
+            opened.then(() => { finishedAt = Date.now(); });
+            await vi.advanceTimersByTimeAsync(30000);
+            await opened;
+            expect(finishedAt - started).toBeLessThan(3500);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

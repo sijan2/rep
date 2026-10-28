@@ -410,7 +410,7 @@ function installTransportObserver(config) {
     }
     function trackPeer(peer) {
         if (peers.has(peer) || peerStates.size >= limits.maxEvents || !observing) return;
-        const state = { id: `peer-${++nextID}`, listeners: [], channels: new Set(), mediaTracks: new Map() };
+        const state = { id: `peer-${++nextID}`, listeners: [], channels: new Set(), mediaTracks: new Map(), closed: false };
         peers.set(peer, state);
         peerStates.add(state);
         listen(peer, 'datachannel', event => safely(() => trackChannel(event.channel, state, 'remote')), state);
@@ -420,7 +420,7 @@ function installTransportObserver(config) {
                     peer_connection_state: short(peer.connectionState), ice_connection_state: short(peer.iceConnectionState),
                     signaling_state: short(peer.signalingState), event: name,
                 } });
-                if (peer.connectionState === 'closed') { stopPeerMedia(state, 'peer_closed'); cleanListeners(state); peerStates.delete(state); }
+                if (peer.connectionState === 'closed') closePeer(state);
             }), state);
         }
         if (mediaEnabled) {
@@ -428,6 +428,13 @@ function installTransportObserver(config) {
             for (const receiver of safely(() => peer.getReceivers()) || []) startMedia(state, receiver.track, 'received', receiver);
             for (const sender of safely(() => peer.getSenders()) || []) trackSender(state, sender);
         }
+    }
+    function closePeer(peer) {
+        if (!peer || peer.closed) return;
+        peer.closed = true;
+        stopPeerMedia(peer, 'peer_closed');
+        cleanListeners(peer);
+        peerStates.delete(peer);
     }
     function mediaSettings(track) {
         const settings = safely(() => track.getSettings()) || {};
@@ -514,7 +521,7 @@ function installTransportObserver(config) {
         }
     }
     function startMedia(peer, track, direction, owner) {
-        if (!mediaEnabled || !observing || !peer || !track || !['audio', 'video'].includes(track.kind) || track.readyState === 'ended') return null;
+        if (!mediaEnabled || !observing || !peer || peer.closed || !track || !['audio', 'video'].includes(track.kind) || track.readyState === 'ended') return null;
         const existing = peer.mediaTracks.get(track)?.get(direction);
         if (existing && !existing.media.stopRequested && !existing.media.finalized) {
             existing.media.owners.add(owner);
@@ -602,9 +609,10 @@ function installTransportObserver(config) {
         return state;
     }
     function trackSender(peer, sender) {
-        if (!peer || !sender || !observing) return;
+        if (!peer || peer.closed || !sender || !observing) return;
         let entry = senderMedia.get(sender);
         if (!entry) { entry = { peer, recording: null }; senderMedia.set(sender, entry); }
+        if (entry.stopped) return;
         const previous = entry.recording;
         if (previous?.media?.original === sender.track && !previous.media.stopRequested) return;
         if (previous?.media && !previous.media.finalized) {
@@ -612,6 +620,17 @@ function installTransportObserver(config) {
             if (!previous.media.owners.size) stopMedia(previous, 'track_replaced');
         }
         entry.recording = startMedia(peer, sender.track, 'sent', sender);
+    }
+    function releaseSenderMedia(sender, reason, stopped = false) {
+        const entry = senderMedia.get(sender);
+        if (!entry) return;
+        const recording = entry.recording;
+        entry.recording = null;
+        if (stopped) entry.stopped = true;
+        if (recording?.media && !recording.media.finalized) {
+            recording.media.owners.delete(sender);
+            if (!recording.media.owners.size) stopMedia(recording, reason);
+        }
     }
     async function stopAllMedia() {
         if (!mediaEnabled || !mediaRecordings.size) return;
@@ -676,6 +695,13 @@ function installTransportObserver(config) {
     const nativePeer = root.RTCPeerConnection;
     const nativeTransport = root.WebTransport;
     const rtcInstalled = (protocolPayloads || mediaEnabled) && constructor('RTCPeerConnection', trackPeer);
+    if (rtcInstalled) patch(nativePeer?.prototype, 'close', Native => function (...args) {
+        const result = apply(Native, this, args);
+        // Native close changes connectionState without dispatching a state
+        // event. Release our listeners and reject late replacement callbacks.
+        if (observing) safely(() => closePeer(peers.get(this)));
+        return result;
+    });
     if (protocolPayloads) patch(nativePeer?.prototype, 'createDataChannel', Native => function (...args) {
         const channel = apply(Native, this, args);
         if (observing) safely(() => trackChannel(channel, peers.get(this), 'local'));
@@ -722,20 +748,14 @@ function installTransportObserver(config) {
         });
         patch(nativePeer?.prototype, 'removeTrack', Native => function (...args) {
             const result = apply(Native, this, args);
-            if (observing) safely(() => {
-                const entry = senderMedia.get(args[0]);
-                const recording = entry?.recording;
-                if (recording?.media && !recording.media.finalized) {
-                    recording.media.owners.delete(args[0]);
-                    if (!recording.media.owners.size) stopMedia(recording, 'track_removed');
-                }
-                if (entry) entry.recording = null;
-            });
+            if (observing) safely(() => releaseSenderMedia(args[0], 'track_removed'));
             return result;
         });
-        patch(nativePeer?.prototype, 'close', Native => function (...args) {
+        patch(root.RTCRtpTransceiver?.prototype, 'stop', Native => function (...args) {
             const result = apply(Native, this, args);
-            if (observing) safely(() => stopPeerMedia(peers.get(this), 'peer_closed'));
+            // Stopping a transceiver leaves its sender's source track live.
+            // Release only this sender's ownership of the cloned recording.
+            if (observing) safely(() => releaseSenderMedia(this.sender, 'transceiver_stopped', true));
             return result;
         });
         patch(root.MediaStreamTrack?.prototype, 'stop', Native => function (...args) {

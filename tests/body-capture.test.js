@@ -31,8 +31,8 @@ function captureHarness({ command, emit } = {}) {
     const controller = new CDPCaptureController({ chromeApi, emit: (message) => { sent.push(message); return emit ? emit(message) : true; } });
     return {
         controller, sent, commands,
-        async start(limit = 8 * 1024 * 1024, limits = {}) {
-            return controller.startSession(7, { url: 'https://fixture.test', captureMode: 'navigate', maxBodyBytes: limit, limits, timeoutMs: 30000, idleMs: 100 });
+        async start(limit = 8 * 1024 * 1024, limits = {}, options = {}) {
+            return controller.startSession(7, { url: 'https://fixture.test', captureMode: 'navigate', maxBodyBytes: limit, limits, timeoutMs: 30000, idleMs: 100, ...options });
         },
         records() {
             const records = [];
@@ -373,6 +373,30 @@ describe('bounded WebSocket observation', () => {
         await h.controller.finishSession(session, {});
         expect(h.records()).toHaveLength(1);
         expect(h.sent.at(-1)).toMatchObject({ action: 'session_end', expected_requests: 1 });
+    });
+
+    it('holds navigation idle until a requested WebSocket is seen and closed', async () => {
+        vi.useFakeTimers();
+        const h = captureHarness();
+        const session = await h.start(8 * 1024 * 1024, {}, { waitWebSocket: '/noise' });
+        session.loaded = true;
+        session.checkIdle();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(session.done).toBe(false);
+
+        h.event('Network.webSocketCreated', { requestId: 'ws', url: 'wss://fixture.test/v1/noise?own=session' });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(session.done).toBe(false);
+
+        h.event('Network.webSocketClosed', { requestId: 'ws', timestamp: 1 });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(session.settled).resolves.toMatchObject({ timedOut: false, reason: 'network-idle' });
+        const finished = h.controller.finishSession(session, { timedOut: false });
+        await vi.advanceTimersByTimeAsync(100);
+        await finished;
+        expect(h.records()[0].stream).toMatchObject({
+            state: 'closed', capture: { state: 'complete', dropped_events: 0 },
+        });
     });
 
     it('retains live connections as partial when the observation boundary ends', async () => {

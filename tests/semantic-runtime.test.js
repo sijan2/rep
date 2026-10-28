@@ -122,6 +122,38 @@ describe('compact semantic observations', () => {
 });
 
 describe('session ownership and frame routing', () => {
+    it('does not allocate an orphan execution lease when attach outlives the caller deadline', async () => {
+        const { runtime } = fixture();
+        const session = await runtime.semantic.ensure(base.tab_id);
+        let resume;
+        vi.spyOn(runtime.semantic, 'ensure').mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(session); }));
+        const now = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+        const pending = runtime.acquireLease({ ...base, purpose: 'execute', request_id: 'l_' + 'a'.repeat(32), deadline_ms: now + 100 });
+        clock.mockReturnValue(now + 101);
+        resume();
+        await expect(pending).rejects.toMatchObject({ code: 'lease_acquisition_expired' });
+        expect(runtime.semantic.activeExecution(base.tab_id)).toBe(false);
+        await expect(runtime.acquireLease({ ...base, purpose: 'execute' })).resolves.toHaveProperty('lease_id');
+    });
+
+    it('cancels an acquisition before its delayed reply and leaves a fresh command usable', async () => {
+        const { runtime } = fixture();
+        const session = await runtime.semantic.ensure(base.tab_id);
+        let resume;
+        vi.spyOn(runtime.semantic, 'ensure').mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(session); }));
+        const request_id = 'l_' + 'b'.repeat(32);
+        const pending = runtime.acquireLease({ ...base, purpose: 'execute', request_id });
+        await runtime.releaseLease({ ...base, lease_id: request_id });
+        resume();
+        await expect(pending).rejects.toMatchObject({ code: 'lease_acquisition_cancelled' });
+        expect(runtime.semantic.activeExecution(base.tab_id)).toBe(false);
+        const next = await runtime.acquireLease({ ...base, purpose: 'execute', request_id: 'l_' + 'c'.repeat(32) });
+        expect(next.lease_id).toBe('l_' + 'c'.repeat(32));
+        await runtime.releaseLease({ ...base, ...next });
+        expect(runtime.semantic.activeExecution(base.tab_id)).toBe(false);
+    });
+
     it('shares observation leases but gives exactly one caller execution ownership', async () => {
         const { runtime } = fixture();
         const first = await runtime.acquireLease({ ...base, purpose: 'execute' });
