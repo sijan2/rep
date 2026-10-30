@@ -59,12 +59,15 @@ export class BrowserRuntime {
     uploadFiles(params) { return this.semantic.upload(params); }
     acquireLease(params) {
         this.assertReloadNotPending('acquire a browser lease');
-        if (this.closingTabs?.has(Number(params.tab_id))) throw rpcError('tab_busy', 'tab close is pending');
+        this.assertTabNotClosing(params);
         return this.semantic.acquire(params);
     }
     releaseLease(params) { return this.semantic.release(params); }
-    observe(params) { return this.semantic.observe(params); }
-    validateObservation(params) { return this.semantic.validate(params); }
+    assertTabNotClosing(params) {
+        if (this.closingTabs?.has(Number(params.tab_id))) throw rpcError('tab_busy', 'tab close is pending');
+    }
+    observe(params) { this.assertTabNotClosing(params); return this.semantic.observe(params); }
+    validateObservation(params) { this.assertTabNotClosing(params); return this.semantic.validate(params); }
 
     async listTabs() {
         const tabs = await this.queryTabs({});
