@@ -105,6 +105,11 @@ export class NativeBridge {
             port.onMessage.addListener((message) => { if (this.port === port) this.handleMessage(message); });
             port.onDisconnect.addListener(() => {
                 const message = this.chrome.runtime.lastError?.message || 'native host disconnected';
+                // A late disconnect from an old port must not disturb a replacement.
+                if (this.port !== port) {
+                    if (!this.port) this.scheduleReconnect();
+                    return;
+                }
                 if (this.port === port) {
                     this.port = null;
                     this.failCapture('capture_transport_disconnected', 'native host disconnected before capture acknowledgement');
@@ -112,7 +117,7 @@ export class NativeBridge {
                 this.lastError = message;
                 this.scheduleReconnect();
             });
-            this.postNow(this.helloMessage());
+            if (!this.postNow(this.helloMessage())) { this.scheduleReconnect(); return; }
             try {
                 this.onConnected();
             } catch (error) {

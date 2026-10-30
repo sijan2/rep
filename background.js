@@ -555,6 +555,7 @@ async function handleBrowserRPC(method, params) {
     case 'browser.status':
         return {
             ...(await captureController.status(nativeBridge.status())),
+            ...captureController.reloadBlockers(),
             ambient_watching: ambientWatching,
             ambient_session_id: ambientSessionId || null,
         };

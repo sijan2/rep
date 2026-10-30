@@ -105,3 +105,62 @@ describe('capture deadline accounting', () => {
         } finally { clock.mockRestore(); }
     });
 });
+
+describe('health lifecycle guards', () => {
+    it('refuses close with an observation or execution lease and permits it after expiry', async () => {
+        const { chromeApi } = fixture();
+        chromeApi.tabs = { remove: vi.fn((_id, done) => done()) };
+        const runtime = new BrowserRuntime({ chromeApi });
+        const leases = new Map([['lease', { owner: 'fixture/a', purpose: 'observe', expires: Date.now() + 10000 }]]);
+        runtime.semantic.sessions.set(7, { leases });
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        expect(chromeApi.tabs.remove).not.toHaveBeenCalled();
+        leases.get('lease').purpose = 'execute';
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        leases.get('lease').expires = 0;
+        await expect(runtime.closeTab({ tab_id: 7 })).resolves.toMatchObject({ closed: true });
+        expect(chromeApi.tabs.remove).toHaveBeenCalledOnce();
+    });
+    it('refuses capture close, pending acquire, and acquire during close', async () => {
+        const { chromeApi } = fixture();
+        let finish;
+        chromeApi.tabs = { remove: vi.fn((_id, done) => { finish = done; }) };
+        const runtime = new CDPCaptureController({ chromeApi });
+        runtime.sessions.set(7, { attached: true });
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        runtime.sessions.delete(7);
+        runtime.semantic.creating.set(7, Promise.resolve());
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        runtime.semantic.creating.delete(7);
+        const closing = runtime.closeTab({ tab_id: 7 });
+        expect(() => runtime.acquireLease({ tab_id: 7, owner: 'fixture/a', purpose: 'execute' })).toThrow('tab close is pending');
+        finish();
+        await closing;
+    });
+    it('blocks reload even when a lease has no persistent control attachment', () => {
+        const { chromeApi } = fixture();
+        const runtime = new BrowserRuntime({ chromeApi });
+        runtime.semantic.sessions.set(7, { leases: new Map([['l', { purpose: 'execute', expires: Date.now() + 10000 }]]) });
+        expect(runtime.reloadBlockers().active_leases).toBe(1);
+        expect(() => runtime.beginReload()).toThrow('browser operations are active');
+        runtime.semantic.sessions.get(7).leases.clear();
+        runtime.beginReload();
+        expect(() => runtime.acquireLease({ tab_id: 7 })).toThrow('reload is pending');
+    });
+});
+
+describe('close versus a pending lease on an existing session', () => {
+    it('reserves a tab before acquire reaches its first async continuation', async () => {
+        const { chromeApi } = fixture();
+        chromeApi.tabs = { remove: vi.fn((_id, done) => done()) };
+        const runtime = new BrowserRuntime({ chromeApi });
+        let acquired;
+        runtime.semantic.acquire = vi.fn(() => new Promise(resolve => { acquired = resolve; }));
+        const pending = runtime.acquireLease({ tab_id: 7, owner: 'fixture/a', purpose: 'execute' });
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        expect(() => runtime.beginReload()).toThrow('browser operations are active');
+        expect(chromeApi.tabs.remove).not.toHaveBeenCalled();
+        acquired({ lease_id: 'fixture' }); await pending;
+        expect(runtime.pendingTabOperations.size).toBe(0);
+    });
+});
