@@ -56,6 +56,7 @@ export class BrowserRuntime {
         for (const abandon of [...inflight]) abandon(rpcError('target_detached', 'debugger target detached before the command completed'));
     }
 
+    uploadFiles(params) { return this.semantic.upload(params); }
     acquireLease(params) { return this.semantic.acquire(params); }
     releaseLease(params) { return this.semantic.release(params); }
     observe(params) { return this.semantic.observe(params); }

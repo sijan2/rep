@@ -566,6 +566,8 @@ async function handleBrowserRPC(method, params) {
         return captureController.attachControl(params);
     case 'browser.detach':
         return captureController.detachControl(params);
+    case 'browser.file.upload':
+        return captureController.uploadFiles(params);
     case 'browser.lease.acquire':
         return captureController.acquireLease(params);
     case 'browser.lease.release':

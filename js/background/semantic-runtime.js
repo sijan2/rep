@@ -39,7 +39,7 @@ export class SemanticRuntime {
         if (this.creating.has(tabId)) return this.creating.get(tabId);
         if (this.sessions.has(tabId)) return this.sessions.get(tabId);
         if (this.sessions.size + this.creating.size >= MAX_TABS) {
-            await this.evictIdle();
+            await this.evictIdle(true);
             if (this.sessions.size + this.creating.size >= MAX_TABS) throw failure('observation_capacity', 'too many browser observation sessions');
         }
         const pending = this.create(tabId);
@@ -177,7 +177,7 @@ export class SemanticRuntime {
         }
         if (params.purpose === 'execute' && [...session.leases.values()].some(lease => lease.purpose === 'execute')) throw failure('tab_busy', 'tab has an active execution owner');
         const id = params.request_id || token();
-        session.leases.set(id, { owner: params.owner, purpose: params.purpose, expires: Date.now() + LEASE_MS });
+        session.leases.set(id, { owner: params.owner, purpose: params.purpose, expires: Math.max(Date.now() + LEASE_MS, Math.min(params.deadline_ms || 0, Date.now() + 360000)) });
         session.lastUsed = Date.now();
         this.scheduleCleanup(session);
         return { lease_id: id, generation: session.generation };
@@ -190,7 +190,7 @@ export class SemanticRuntime {
         this.expireLeases(session);
         const lease = session.leases.get(params.lease_id);
         if (!lease || lease.owner !== params.owner) throw failure('invalid_lease', 'browser lease is absent, expired or owned by another task');
-        lease.expires = Date.now() + LEASE_MS;
+        lease.expires = Math.max(lease.expires, Date.now() + LEASE_MS);
         session.lastUsed = Date.now();
         return { session, lease };
     }
@@ -213,6 +213,16 @@ export class SemanticRuntime {
         if (lease.owner !== params.owner) throw failure('invalid_lease', 'lease belongs to another task');
         session.leases.delete(params.lease_id);
         session.lastUsed = Date.now();
+        if (params.detach_if_idle && !session.leases.size && !this.runtime.isCapturingTab(session.tabId)) {
+            await session.tail;
+            if (!session.leases.size) {
+                session.valid = false;
+                clearTimeout(session.timer);
+                this.sessions.delete(session.tabId);
+                if (session.ownsAttachment) await this.runtime.detachControl({tab_id:session.tabId});
+                return { released:true, detached:true };
+            }
+        }
         this.scheduleCleanup(session);
         return { released: true };
     }
@@ -455,6 +465,41 @@ export class SemanticRuntime {
         }
     }
 
+    async upload(params) {
+        const { session, lease } = this.lease(params);
+        if (lease.purpose !== 'execute') throw failure('execution_lease_required', 'file input needs an execution lease');
+        if (!Array.isArray(params.files) || !params.files.length || params.files.length > 32 || params.files.some(p => typeof p !== 'string' || !p.startsWith('/') || p.length > 8192)) throw failure('invalid_argument', 'bounded absolute file paths required');
+        if (!Number.isFinite(params.point?.x) || !Number.isFinite(params.point?.y)) throw failure('invalid_argument', 'guarded trigger point required');
+        return this.enqueue(session, async () => {
+            this.lease(params);
+            if (params.generation !== session.generation) throw failure('stale_session', 'file trigger session changed');
+            await this.refreshFrames(session);
+            if (params.expected_root_url && session.frames.get(session.rootID)?.url !== params.expected_root_url) throw failure('page_changed', 'file trigger document changed');
+            const root = this.debuggee(session);
+            let timer, remove = () => {}, dispatched = false;
+            const opened = new Promise(resolve => {
+                remove = this.runtime.addDebuggerEventListener((source, method, event) => {
+                    if (dispatched && source.tabId === session.tabId && method === 'Page.fileChooserOpened' && event.backendNodeId) resolve({ source, event });
+                });
+                timer = setTimeout(() => resolve(null), 3000);
+            });
+            try {
+                await this.runtime.sendDebugCommand(root, 'Page.setInterceptFileChooserDialog', { enabled: true });
+                dispatched = true;
+                try { await this.runtime.sendDebugCommand(root, 'Input.dispatchMouseEvent', { type:'mousePressed', ...params.point, button:'left', clickCount:1 }); }
+                finally { await this.runtime.sendDebugCommand(root, 'Input.dispatchMouseEvent', { type:'mouseReleased', ...params.point, button:'left', clickCount:1 }); }
+                const found = await opened;
+                if (!found) throw failure('file_chooser_not_observed', 'trigger dispatched; file chooser was not observed');
+                this.lease(params);
+                await this.runtime.sendDebugCommand(found.source, 'DOM.setFileInputFiles', { backendNodeId: found.event.backendNodeId, files: params.files });
+                return { status: 'performed', files: params.files.length };
+            } finally {
+                clearTimeout(timer); remove();
+                await this.runtime.sendDebugCommand(root, 'Page.setInterceptFileChooserDialog', { enabled:false }).catch(() => {});
+            }
+        });
+    }
+
     async cdp(params) {
         let dispatched = false;
         try {
@@ -502,15 +547,16 @@ export class SemanticRuntime {
         session.timer.unref?.();
     }
 
-    async evictIdle() {
-        for (const [id, session] of this.sessions) {
+    async evictIdle(atCapacity = false) {
+        for (const [id, session] of [...this.sessions].sort((a,b) => a[1].lastUsed-b[1].lastUsed)) {
             this.expireLeases(session);
-            if (session.leases.size || Date.now() - session.lastUsed < IDLE_MS || this.runtime.isCapturingTab(id)) { this.scheduleCleanup(session); continue; }
+            if (session.leases.size || (!atCapacity && Date.now() - session.lastUsed < IDLE_MS) || this.runtime.isCapturingTab(id)) { this.scheduleCleanup(session); continue; }
             await session.tail;
             if (session.leases.size) continue;
             session.valid = false;
             clearTimeout(session.timer);
             this.sessions.delete(id);
+            atCapacity = false;
             if (session.ownsAttachment) await this.runtime.detachControl({ tab_id: id }).catch(() => {});
         }
     }

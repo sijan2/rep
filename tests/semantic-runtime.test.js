@@ -237,3 +237,58 @@ describe('session ownership and frame routing', () => {
         expect(check.snapshot.candidates[0].document_generation).not.toBe(snapshot.candidates[0].document_generation);
     });
 });
+
+describe('agent execution duration and capacity', () => {
+    it('keeps an eval lease for its entire declared five-minute budget', async () => {
+        const { runtime } = fixture();
+        const start = Date.now();
+        vi.spyOn(Date, 'now').mockReturnValue(start);
+        const lease = await runtime.semantic.acquire({ ...base, purpose: 'execute', deadline_ms: start + 300000 });
+        Date.now.mockReturnValue(start + 121000);
+        expect(runtime.semantic.lease({ ...base, ...lease }).lease.purpose).toBe('execute');
+        Date.now.mockReturnValue(start + 301000);
+        expect(() => runtime.semantic.lease({ ...base, ...lease })).toThrow();
+    });
+    it('evicts the least-recent leaseless observer at capacity, never an executing tab', async () => {
+        const { runtime } = fixture();
+        const active = await runtime.semantic.acquire({ ...base, purpose: 'execute' });
+        for (let id = 8; id < 15; id++) await runtime.semantic.ensure(id);
+        expect(runtime.semantic.sessions.size).toBe(8);
+        await runtime.semantic.ensure(15);
+        expect(runtime.semantic.sessions.size).toBe(8);
+        expect(runtime.semantic.sessions.has(7)).toBe(true);
+        expect(runtime.semantic.sessions.has(8)).toBe(false);
+        expect(runtime.semantic.lease({ ...base, ...active }).lease.purpose).toBe('execute');
+    });
+});
+
+it('uploads through a task-owned native chooser and always restores interception', async () => {
+    const { runtime, chromeApi, onEvent } = fixture();
+    const acquired = await runtime.semantic.acquire({ ...base, purpose:'execute' });
+    const prior = chromeApi.debugger.sendCommand.getMockImplementation();
+    chromeApi.debugger.sendCommand.mockImplementation((source,method,params,done) => {
+        if (method==='Input.dispatchMouseEvent' && params.type==='mouseReleased') {
+            onEvent.emit({tabId:999},'Page.fileChooserOpened',{backendNodeId:999});
+            onEvent.emit(source,'Page.fileChooserOpened',{backendNodeId:42});
+        }
+        return prior(source,method,params,done);
+    });
+    await runtime.uploadFiles({...base,...acquired,point:{x:20,y:30},files:['/synthetic/upload.txt']});
+    const input = chromeApi.debugger.sendCommand.mock.calls.find(c=>c[1]==='DOM.setFileInputFiles');
+    expect(input[0].tabId).toBe(7);
+    expect(input[2]).toEqual({backendNodeId:42,files:['/synthetic/upload.txt']});
+    const interceptions=chromeApi.debugger.sendCommand.mock.calls.filter(c=>c[1]==='Page.setInterceptFileChooserDialog');
+    expect(interceptions.map(c=>c[2].enabled)).toEqual([true,false]);
+    expect(runtime.debuggerEventListeners.size).toBe(0);
+});
+
+it('detaches a completed page read immediately without detaching another lease', async () => {
+    const { runtime,chromeApi } = fixture();
+    const execute=await runtime.semantic.acquire({...base,purpose:'execute'});
+    const observe=await runtime.semantic.acquire({...base,purpose:'observe'});
+    await runtime.releaseLease({...base,...observe,detach_if_idle:true});
+    expect(chromeApi.debugger.detach).not.toHaveBeenCalled();
+    await runtime.releaseLease({...base,...execute,detach_if_idle:true});
+    expect(chromeApi.debugger.detach).toHaveBeenCalledOnce();
+    expect(runtime.semantic.sessions.size).toBe(0);
+});
