@@ -979,6 +979,27 @@ describe('navigation load grace', () => {
     });
 });
 
+describe('agent-owned capture sessions', () => {
+    it('records across lease-bound calls, refuses another owner, and seals once', async () => {
+        const emitted=[];
+        const chromeApi={runtime:{lastError:null},tabs:{get:(id,done)=>done({id,url:'https://example.test/'})},debugger:{
+            onEvent:eventHook(),onDetach:eventHook(),attach:(_d,_v,done)=>done(),detach:(_d,done)=>done(),sendCommand:(_d,_m,_p,done)=>done({})}};
+        const controller=new CDPCaptureController({chromeApi,emit:message=>emitted.push(message)});
+        controller.semantic.lease=()=>({lease:{purpose:'execute'}});
+        controller.semantic.activeExecution=()=>true;
+        const begun=await controller.beginAgentCapture({tab_id:42,owner:'fixture/task',lease_id:'lease',timeout_ms:2000});
+        expect(controller.sessions.get(42).manual).toBe(true);
+        expect(()=>controller.beginAgentCapture({tab_id:43,owner:'other',lease_id:'lease',timeout_ms:2000})).toThrow();
+        await expect(controller.endAgentCapture({...begun,owner:'other'})).rejects.toMatchObject({code:'capture_not_owned'});
+        const result=await controller.endAgentCapture({...begun,owner:'fixture/task'});
+        expect(result).toMatchObject({session_id:begun.session_id,tab_id:42,requests:0,timed_out:false});
+        expect(controller.sessions.size).toBe(0);
+        expect(controller.captureOperationActive).toBe(false);
+        expect(emitted.map(message=>message.action)).toEqual(['session_begin','session_end']);
+        expect(await controller.endAgentCapture({...begun,owner:'fixture/task'})).toEqual(result);
+    });
+});
+
 describe('native bridge reconnect ownership', () => {
     it('ignores a late old-port disconnect after a replacement is connected', () => {
         vi.useFakeTimers();

@@ -581,6 +581,11 @@ async function handleBrowserRPC(method, params) {
         return captureController.sendCDP(params);
     case 'browser.eval':
         return captureController.evaluate(params);
+    case 'browser.capture.begin':
+        await stopAmbientForExplicitCapture();
+        return captureController.beginAgentCapture(params);
+    case 'browser.capture.end':
+        return captureController.endAgentCapture(params);
     case 'browser.action':
         await stopAmbientForExplicitCapture();
         return captureController.action(params);
