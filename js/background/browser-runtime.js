@@ -10,6 +10,7 @@ export class BrowserRuntime {
         this.chrome = chromeApi;
         this.controlAttachments = new Map();
         this.pendingPersistentAttachments = 0;
+        this.pendingTabOperations = new Map();
         this.reloadPending = false;
         this.boundDetach = (source, reason) => this.handleDebuggerDetach(source, reason);
         this.chrome.debugger.onDetach.addListener(this.boundDetach);
@@ -57,10 +58,28 @@ export class BrowserRuntime {
     }
 
     uploadFiles(params) { return this.semantic.upload(params); }
-    acquireLease(params) { return this.semantic.acquire(params); }
+    acquireLease(params) {
+        this.assertReloadNotPending('acquire a browser lease');
+        return this.withTabOperation(params, () => this.semantic.acquire(params));
+    }
     releaseLease(params) { return this.semantic.release(params); }
-    observe(params) { return this.semantic.observe(params); }
-    validateObservation(params) { return this.semantic.validate(params); }
+    assertTabNotClosing(params) {
+        if (this.closingTabs?.has(Number(params.tab_id))) throw rpcError('tab_busy', 'tab close is pending');
+    }
+    withTabOperation(params, operation) {
+        this.assertTabNotClosing(params);
+        const tab = Number(params.tab_id);
+        this.pendingTabOperations.set(tab, (this.pendingTabOperations.get(tab) || 0) + 1);
+        const release = () => {
+            const remaining = this.pendingTabOperations.get(tab) - 1;
+            if (remaining) this.pendingTabOperations.set(tab, remaining);
+            else this.pendingTabOperations.delete(tab);
+        };
+        try { return Promise.resolve(operation()).finally(release); }
+        catch (error) { release(); throw error; }
+    }
+    observe(params) { return this.withTabOperation(params, () => this.semantic.observe(params)); }
+    validateObservation(params) { return this.withTabOperation(params, () => this.semantic.validate(params)); }
 
     async listTabs() {
         const tabs = await this.queryTabs({});
@@ -186,6 +205,8 @@ export class BrowserRuntime {
             ...this.captureActivity(),
             attached_targets: this.controlAttachments.size,
             pending_attachments: this.pendingPersistentAttachments,
+            pending_leases: [...this.pendingTabOperations.values()].reduce((count, pending) => count + pending, 0),
+            active_leases: [...this.semantic.sessions.values()].reduce((count, session) => { this.semantic.expireLeases(session); return count + session.leases.size; }, 0),
         };
     }
 
@@ -271,8 +292,21 @@ export class BrowserRuntime {
     async closeTab(params = {}) {
         const tabId = Number(params.tab_id);
         if (!Number.isInteger(tabId) || tabId < 0) throw rpcError('invalid_argument', 'tab_id must be a non-negative integer');
+        this.assertReloadNotPending('close a tab');
         if (this.isCapturingTab(tabId)) throw rpcError('tab_busy', `tab ${tabId} has an active capture`);
-        await this.call(this.chrome.tabs, 'remove', tabId);
+        const session = this.semantic.sessions.get(tabId);
+        if (session) {
+            this.semantic.expireLeases(session);
+            if (session.leases.size) throw rpcError('tab_busy', 'tab has an active browser lease');
+        }
+        // Block a simultaneous acquire until removal completes, including the
+        // interval before an observation session has finished attaching.
+        if (this.semantic.creating.has(tabId) || this.pendingTabOperations.has(tabId)) throw rpcError('tab_busy', 'tab observation or lease acquisition is pending');
+        this.closingTabs ??= new Set();
+        if (this.closingTabs.has(tabId)) throw rpcError('tab_busy', 'tab close is already pending');
+        this.closingTabs.add(tabId);
+        try { await this.call(this.chrome.tabs, 'remove', tabId); }
+        finally { this.closingTabs.delete(tabId); }
         return { closed: true, tab_id: tabId };
     }
 

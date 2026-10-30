@@ -978,3 +978,33 @@ describe('navigation load grace', () => {
         }
     });
 });
+
+describe('native bridge reconnect ownership', () => {
+    it('ignores a late old-port disconnect after a replacement is connected', () => {
+        vi.useFakeTimers();
+        const ports = [];
+        const chromeApi = { runtime: { id: 'a'.repeat(32), getManifest: () => ({ version: '1.0.0' }), lastError: null,
+            connectNative() { const port = { onMessage: eventHook(), onDisconnect: eventHook(), postMessage() {}, disconnect() {} }; ports.push(port); return port; } } };
+        const bridge = new NativeBridge({ chromeApi });
+        try {
+            bridge.start(); ports[0].onDisconnect.emit(); bridge.wake();
+            expect(ports).toHaveLength(2);
+            ports[0].onDisconnect.emit();
+            expect(bridge.port).toBe(ports[1]);
+            expect(bridge.reconnectTimer).toBeNull();
+            expect(bridge.lastError).toBe('');
+        } finally { bridge.stop(); vi.useRealTimers(); }
+    });
+    it('retries a failed hello without waiting for a disconnect event', () => {
+        vi.useFakeTimers();
+        let attempts = 0;
+        const chromeApi = { runtime: { id: 'a'.repeat(32), getManifest: () => ({ version: '1.0.0' }), lastError: null,
+            connectNative() { attempts++; return { onMessage: eventHook(), onDisconnect: eventHook(), postMessage() { if (attempts === 1) throw new Error('synthetic closed port'); }, disconnect() {} }; } } };
+        const bridge = new NativeBridge({ chromeApi });
+        try {
+            bridge.start(); expect(bridge.port).toBeNull();
+            vi.advanceTimersByTime(500);
+            expect(attempts).toBe(2); expect(bridge.isConnected()).toBe(true);
+        } finally { bridge.stop(); vi.useRealTimers(); }
+    });
+});
