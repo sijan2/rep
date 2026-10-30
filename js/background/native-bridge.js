@@ -3,6 +3,8 @@ const MAX_QUEUE_MESSAGES = 200;
 const MAX_RECONNECT_MS = 15000;
 const CAPTURE_ACK_TIMEOUT_MS = 10000;
 const MAX_CAPTURE_PENDING_BYTES = 16 * 1024 * 1024;
+const WAKE_ALARM = 'rep-native-bridge-wake';
+const WAKE_PERIOD_MINUTES = 0.5;
 
 export class NativeBridge {
     constructor({ chromeApi = globalThis.chrome, hostName = DEFAULT_HOST, onRPC, onHostMessage, onConnected } = {}) {
@@ -48,6 +50,16 @@ export class NativeBridge {
             try { this.port.disconnect(); } catch (_) { /* already gone */ }
             this.port = null;
         }
+    }
+
+    // A browser wake event reconnects now instead of waiting out the backoff.
+    wake() {
+        if (!this.started || this.port) return;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.connect();
     }
 
     isConnected() {
@@ -274,6 +286,28 @@ export class NativeBridge {
                 error: normalizeRPCError(error),
             }, { queue: false });
         }
+    }
+}
+
+// Native ports cannot keep a worker alive through profile shutdown. Register
+// wake events synchronously so Chromium can restart this worker. A window
+// opening also covers profile reactivation without runtime.onStartup; alarms
+// are a fallback and may be delayed or cleared by the browser across restarts.
+export function installBridgeWake(bridge, chromeApi = globalThis.chrome) {
+    chromeApi.runtime?.onStartup?.addListener(() => bridge.wake());
+    chromeApi.runtime?.onInstalled?.addListener(() => bridge.wake());
+    chromeApi.windows?.onCreated?.addListener(() => bridge.wake());
+    if (!chromeApi.alarms) return;
+    chromeApi.alarms.onAlarm.addListener((alarm) => {
+        if (alarm?.name === WAKE_ALARM) bridge.wake();
+    });
+    // Recreate on every worker start because alarm persistence is not guaranteed.
+    // An alarm failure must not prevent the other wake events from working.
+    try {
+        Promise.resolve(chromeApi.alarms.create(WAKE_ALARM, { periodInMinutes: WAKE_PERIOD_MINUTES }))
+            .catch((error) => console.warn('rep+: Could not schedule bridge wake alarm', error));
+    } catch (error) {
+        console.warn('rep+: Could not schedule bridge wake alarm', error);
     }
 }
 

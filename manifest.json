@@ -4,6 +4,7 @@
     "version": "1.4.0",
     "description": "rep+ - Capture, modify, and replay HTTP requests in Chrome DevTools with AI-powered security analysis.",
     "permissions": [
+        "alarms",
         "debugger",
         "nativeMessaging",
         "storage",

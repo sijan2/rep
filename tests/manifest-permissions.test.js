@@ -7,6 +7,7 @@ const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'manifest.json')
 describe('extension permission boundaries', () => {
     it('keeps browser-control APIs required', () => {
         expect(manifest.permissions).toEqual(expect.arrayContaining([
+            'alarms',
             'debugger',
             'nativeMessaging',
             'storage',

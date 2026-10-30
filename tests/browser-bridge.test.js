@@ -9,7 +9,7 @@ import {
     normalizeURL,
     summarizeRequests,
 } from '../js/background/cdp-capture.js';
-import { NativeBridge, normalizeRPCError } from '../js/background/native-bridge.js';
+import { installBridgeWake, NativeBridge, normalizeRPCError } from '../js/background/native-bridge.js';
 import { scheduleExtensionReload } from '../js/background/runtime-control.js';
 
 function eventHook() {
@@ -760,6 +760,93 @@ describe('native bridge', () => {
             result: { method: 'browser.status', params: { compact: true }, ok: true },
         });
         bridge.stop();
+    });
+
+    it('registers browser wake handlers synchronously and ignores unrelated alarms', () => {
+        const onStartup = eventHook();
+        const onInstalled = eventHook();
+        const onCreated = eventHook();
+        const onAlarm = eventHook();
+        const create = vi.fn();
+        const bridge = { wake: vi.fn() };
+        installBridgeWake(bridge, { runtime: { onStartup, onInstalled }, windows: { onCreated }, alarms: { onAlarm, create } });
+        expect(create).toHaveBeenCalledWith('rep-native-bridge-wake', { periodInMinutes: 0.5 });
+
+        onAlarm.emit({ name: 'someone-else' });
+        expect(bridge.wake).not.toHaveBeenCalled();
+        onAlarm.emit({ name: 'rep-native-bridge-wake' });
+        onStartup.emit();
+        onInstalled.emit();
+        onCreated.emit({ id: 42 });
+        expect(bridge.wake).toHaveBeenCalledTimes(4);
+    });
+
+    it('can wake on a new window when alarms are unavailable', () => {
+        const onCreated = eventHook();
+        const bridge = { wake: vi.fn() };
+        installBridgeWake(bridge, { runtime: {}, windows: { onCreated } });
+        onCreated.emit({ id: 42 });
+        expect(bridge.wake).toHaveBeenCalledOnce();
+    });
+
+    it.each(['throw', 'reject'])('keeps window recovery when alarm creation fails (%s)', async (mode) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const onCreated = eventHook();
+            const bridge = { wake: vi.fn() };
+            const error = new Error('alarms unavailable');
+            installBridgeWake(bridge, { runtime: {}, windows: { onCreated }, alarms: {
+                onAlarm: eventHook(),
+                create: () => {
+                    if (mode === 'throw') throw error;
+                    return Promise.reject(error);
+                },
+            } });
+            await Promise.resolve();
+            onCreated.emit({ id: 42 });
+            expect(bridge.wake).toHaveBeenCalledOnce();
+            expect(warn).toHaveBeenCalledWith('rep+: Could not schedule bridge wake alarm', error);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('wakes past reconnect backoff without opening a second port', () => {
+        vi.useFakeTimers();
+        try {
+            const ports = [];
+            const chromeApi = {
+                runtime: {
+                    id: 'a'.repeat(32),
+                    getManifest: () => ({ version: '1.0.0' }),
+                    connectNative: () => {
+                        const port = { onMessage: eventHook(), onDisconnect: eventHook(), postMessage() {} };
+                        ports.push(port);
+                        return port;
+                    },
+                    lastError: null,
+                },
+            };
+            const bridge = new NativeBridge({ chromeApi });
+            const onCreated = eventHook();
+            installBridgeWake(bridge, { runtime: {}, windows: { onCreated } });
+            bridge.start();
+            bridge.reconnectDelay = 15000;
+            ports[0].onDisconnect.emit();
+            expect(bridge.reconnectTimer).not.toBeNull();
+
+            onCreated.emit({ id: 42 });
+            expect(ports).toHaveLength(2);
+            expect(bridge.reconnectTimer).toBeNull();
+            bridge.wake();
+            vi.advanceTimersByTime(30000);
+            expect(ports).toHaveLength(2);
+            bridge.stop();
+            onCreated.emit({ id: 43 });
+            expect(ports).toHaveLength(2);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('normalizes thrown errors for RPC transport', () => {

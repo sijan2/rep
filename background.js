@@ -1,4 +1,4 @@
-import { NativeBridge } from './js/background/native-bridge.js';
+import { installBridgeWake, NativeBridge } from './js/background/native-bridge.js';
 import { CDPCaptureController } from './js/background/cdp-capture.js';
 import { scheduleExtensionReload } from './js/background/runtime-control.js';
 import { buildStableRequestId } from './js/core/utils/hash.js';
@@ -665,6 +665,7 @@ nativeBridge = new NativeBridge({
     },
 });
 nativeBridge.start();
+installBridgeWake(nativeBridge);
 ambientStateReady.then(resumeAmbientIfNeeded);
 
 // Initial setup

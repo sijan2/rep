@@ -1,12 +1,21 @@
 // Network Operations
 
-export function setupNetworkListener(onRequestCaptured) {
+export function setupNetworkListener(onRequestCaptured, chromeApi = globalThis.chrome) {
+    // DevTools APIs are only injected into a DevTools page and its panels.
+    // Opening panel.html as an extension tab must not abort the rest of the UI.
+    const devtools = chromeApi?.devtools;
+    const network = devtools?.network;
+    if (!network?.onNavigated?.addListener || !network?.onRequestFinished?.addListener) {
+        console.warn('rep+: Current-tab capture requires the rep+ panel inside browser DevTools.');
+        return false;
+    }
+
     // Get the current page URL once at setup
     let currentPageUrl = '';
     let inspectedTabId = null;
-    if (chrome.devtools && chrome.devtools.inspectedWindow) {
-        inspectedTabId = chrome.devtools.inspectedWindow.tabId || null;
-        chrome.devtools.inspectedWindow.eval('window.location.href', (result, isException) => {
+    if (devtools.inspectedWindow) {
+        inspectedTabId = devtools.inspectedWindow.tabId ?? null;
+        devtools.inspectedWindow.eval('window.location.href', (result, isException) => {
             if (!isException && result) {
                 currentPageUrl = result;
             }
@@ -14,11 +23,11 @@ export function setupNetworkListener(onRequestCaptured) {
     }
 
     // Update page URL when navigation occurs
-    chrome.devtools.network.onNavigated.addListener((url) => {
+    network.onNavigated.addListener((url) => {
         currentPageUrl = url;
     });
 
-    chrome.devtools.network.onRequestFinished.addListener((request) => {
+    network.onRequestFinished.addListener((request) => {
         // Filter out data URLs or extension schemes
         if (!request.request.url.startsWith('http')) return;
 
@@ -115,6 +124,7 @@ export function setupNetworkListener(onRequestCaptured) {
             onRequestCaptured(enhancedRequest);
         });
     });
+    return true;
 }
 
 export function parseRequest(rawContent, useHttps) {
