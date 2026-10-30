@@ -94,6 +94,18 @@ describe('lossless response streaming', () => {
         expect(h.records()[0]).toMatchObject({ response: { body: '{"saved":true}' }, response_body_capture: { state: 'complete', source: 'cdp-buffer' } });
     });
 
+    it.each(['native consumer bytes', ''])('checks an empty successful stream against the browser buffer', async (body) => {
+        const h = captureHarness({ command({ method, callback }) {
+            if (method === 'Network.streamResourceContent') { callback({ bufferedData: '' }); return true; }
+            if (method === 'Network.getResponseBody') { callback({ body, base64Encoded: false }); return true; }
+        } });
+        const session = await h.start(); h.request(); h.response();
+        h.event('Network.loadingFinished', { requestId: 'r1', encodedDataLength: 0 });
+        await h.controller.finishSession(session, {});
+        expect(h.records()[0]).toMatchObject({ response: { body }, response_body_capture: { state: 'complete', source: 'cdp-buffer', captured_bytes: body.length } });
+        expect(h.commands.some(({ method }) => method === 'Network.getResponseBody')).toBe(true);
+    });
+
     it('retains a binary prefix exactly and reports observed bytes when its limit is reached', () => {
         const body = new ResponseBodyCollector(4);
         body.appendBase64(b64(Uint8Array.from([0, 255, 240, 159, 152, 128, 5])));

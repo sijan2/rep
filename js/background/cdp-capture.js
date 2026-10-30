@@ -1130,7 +1130,10 @@ export class CDPCaptureController extends BrowserRuntime {
         if (session.sealed || record.bodyFinalized) return;
         if (record.bodyStream?.enabled) {
             const missingStreamBytes = Math.max(0, (record.receivedDecodedBytes || 0) - record.bodyStream.collector.observed);
-            if (!missingStreamBytes) {
+            // Chromium can complete a native Blob consumer without emitting
+            // stream data. An empty stream is not proof of an empty body; ask
+            // the browser buffer, which also handles genuinely empty bodies.
+            if (!missingStreamBytes && record.bodyStream.collector.observed > 0) {
                 this.applyStreamBody(record);
                 return;
             }
