@@ -57,7 +57,11 @@ export class BrowserRuntime {
     }
 
     uploadFiles(params) { return this.semantic.upload(params); }
-    acquireLease(params) { return this.semantic.acquire(params); }
+    acquireLease(params) {
+        this.assertReloadNotPending('acquire a browser lease');
+        if (this.closingTabs?.has(Number(params.tab_id))) throw rpcError('tab_busy', 'tab close is pending');
+        return this.semantic.acquire(params);
+    }
     releaseLease(params) { return this.semantic.release(params); }
     observe(params) { return this.semantic.observe(params); }
     validateObservation(params) { return this.semantic.validate(params); }
@@ -186,6 +190,7 @@ export class BrowserRuntime {
             ...this.captureActivity(),
             attached_targets: this.controlAttachments.size,
             pending_attachments: this.pendingPersistentAttachments,
+            active_leases: [...this.semantic.sessions.values()].reduce((count, session) => { this.semantic.expireLeases(session); return count + session.leases.size; }, 0),
         };
     }
 
@@ -271,8 +276,21 @@ export class BrowserRuntime {
     async closeTab(params = {}) {
         const tabId = Number(params.tab_id);
         if (!Number.isInteger(tabId) || tabId < 0) throw rpcError('invalid_argument', 'tab_id must be a non-negative integer');
+        this.assertReloadNotPending('close a tab');
         if (this.isCapturingTab(tabId)) throw rpcError('tab_busy', `tab ${tabId} has an active capture`);
-        await this.call(this.chrome.tabs, 'remove', tabId);
+        const session = this.semantic.sessions.get(tabId);
+        if (session) {
+            this.semantic.expireLeases(session);
+            if (session.leases.size) throw rpcError('tab_busy', 'tab has an active browser lease');
+        }
+        // Block a simultaneous acquire until removal completes, including the
+        // interval before an observation session has finished attaching.
+        if (this.semantic.creating.has(tabId)) throw rpcError('tab_busy', 'tab observation session is being created');
+        this.closingTabs ??= new Set();
+        if (this.closingTabs.has(tabId)) throw rpcError('tab_busy', 'tab close is already pending');
+        this.closingTabs.add(tabId);
+        try { await this.call(this.chrome.tabs, 'remove', tabId); }
+        finally { this.closingTabs.delete(tabId); }
         return { closed: true, tab_id: tabId };
     }
 

@@ -105,6 +105,8 @@ export class NativeBridge {
             port.onMessage.addListener((message) => { if (this.port === port) this.handleMessage(message); });
             port.onDisconnect.addListener(() => {
                 const message = this.chrome.runtime.lastError?.message || 'native host disconnected';
+                // A late disconnect from an old port must not disturb a replacement.
+                if (this.port !== port) return;
                 if (this.port === port) {
                     this.port = null;
                     this.failCapture('capture_transport_disconnected', 'native host disconnected before capture acknowledgement');
