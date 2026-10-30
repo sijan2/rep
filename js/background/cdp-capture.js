@@ -13,7 +13,7 @@ const BODY_DRAIN_MS = 5000;
 const MAX_GRACE_EXTENSION_MS = 15000;
 const NETWORK_PROGRESS_EVENTS = new Set(['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed']);
 const DEFAULT_ACTION_RESULT_LIMIT = 64 * 1024;
-const MAX_ACTION_RESULT_LIMIT = 256 * 1024;
+const MAX_ACTION_RESULT_LIMIT = 16 * 1024 * 1024;
 const DEFAULT_ACTION_SETTLE_MS = 1500;
 const MAX_ACTION_SETTLE_MS = 10000;
 const NON_BLOCKING_TYPES = new Set(['WebSocket', 'EventSource', 'Media', 'Ping']);
@@ -28,6 +28,7 @@ export class CDPCaptureController extends BrowserRuntime {
         this.captureTail = Promise.resolve();
         this.queuedCaptures = 0;
         this.captureOperationActive = false;
+        this.agentCaptures = new Map();
         this.boundEvent = (source, method, params) => this.handleDebuggerEvent(source, method, params);
         this.chrome.debugger.onEvent.addListener(this.boundEvent);
     }
@@ -85,7 +86,7 @@ export class CDPCaptureController extends BrowserRuntime {
 
     async runExplicitCapture(params, operation, task) {
         this.assertReloadNotPending(`start ${operation}`);
-        const timeoutMs = clampInteger(params?.timeout_ms, DEFAULT_TIMEOUT_MS, 1000, 120000);
+        const timeoutMs = clampInteger(params?.timeout_ms, DEFAULT_TIMEOUT_MS, 1000, 360000);
         const deadlineAt = Date.now() + timeoutMs;
         const previous = this.captureTail;
         let releaseGate;
@@ -121,6 +122,46 @@ export class CDPCaptureController extends BrowserRuntime {
             this.captureOperationActive = false;
             release();
         }
+    }
+
+    // The CLI owns the action lease for the whole capture. This separates
+    // recording from input dispatch, so no action is retried to recover evidence.
+    beginAgentCapture(params = {}) {
+        const checked = this.semantic.lease(params);
+        if (checked.lease.purpose !== 'execute') throw rpcError('execution_lease_required', 'recording requires an execution lease');
+        if (this.captureOperationActive || this.queuedCaptures) throw rpcError('capture_busy', 'another capture owns the recording queue');
+        let ready, reject;
+        const begun = new Promise((resolve,fail) => {ready=resolve;reject=fail;});
+        const operation = this.runExplicitCapture(params, 'agent capture', async bounded => {
+            this.semantic.lease(params);
+            const tab = await this.call(this.chrome.tabs, 'get', params.tab_id);
+            const session = await this.startSession(params.tab_id, {
+                url: params.url || tab.url || 'about:blank', timeoutMs:bounded.timeout_ms,
+                idleMs:250, maxBodyBytes:DEFAULT_BODY_LIMIT, captureMode:'agent',
+                limits:captureLimits(params), leaseParams:params, manual:true,
+            });
+            session.manual = true;
+            const captureToken=globalThis.crypto.randomUUID();
+            this.agentCaptures.set(session.id,{session,owner:params.owner,token:captureToken,completion:operation});
+            ready({session_id:session.id,capture_token:captureToken,tab_id:session.tabId});
+            let settled;
+            try { settled=await session.settled; }
+            finally { await this.finishSession(session,settled || {reason:'failed',timedOut:false}); }
+            const result={session_id:session.id,tab_id:session.tabId,load_state:settled.reason,timed_out:!!settled.timedOut,
+                duration_ms:Date.now()-session.startedAt,...summarizeRequests(session.requestList())};
+            setTimeout(()=>this.agentCaptures.delete(session.id),60000);
+            return result;
+        });
+        operation.catch(reject);
+        return begun;
+    }
+
+    async endAgentCapture(params = {}) {
+        const capture=this.agentCaptures.get(params.session_id);
+        if(!capture || capture.owner!==params.owner || capture.token!==params.capture_token) throw rpcError('capture_not_owned','capture session is absent or belongs to another owner');
+        const session=capture.session;
+        if(!session.done) {session.manual=false;session.loaded=true;session.observeFor(250);session.checkIdle();session.startGrace(1500);}
+        return capture.completion;
     }
 
     action(params = {}) {
@@ -509,7 +550,9 @@ export class CDPCaptureController extends BrowserRuntime {
 
     async startSession(tabId, options) {
         if (this.sessions.has(tabId)) throw rpcError('tab_busy', `tab ${tabId} already has an active capture`);
-        if (this.semantic.activeExecution(tabId)) throw rpcError('tab_busy', `tab ${tabId} has an active execution lease`);
+        if (this.semantic.activeExecution(tabId)) {
+            if (!options.leaseParams || this.semantic.lease(options.leaseParams).lease.purpose !== 'execute') throw rpcError('tab_busy', `tab ${tabId} has an active execution lease`);
+        }
         const session = createCaptureSession(tabId, options);
         session.transports = new TransportCapture(this, session, options.protocolPayloads === true, options.webrtcMedia === true);
         this.sessions.set(tabId, session);
@@ -1315,6 +1358,7 @@ function createCaptureSession(tabId, options) {
         finalURL: options.url,
         captureMode: options.captureMode,
         headersOnly: Boolean(options.headersOnly),
+        manual: Boolean(options.manual),
         fetchMethod: String(options.fetchMethod || 'GET').toUpperCase(),
         fetchArmed: false,
         fetchRequestID: '',
@@ -1376,6 +1420,7 @@ function createCaptureSession(tabId, options) {
             this.idleTimer = null;
         },
         checkIdle() {
+            if (this.manual) return;
             if (this.waitWebSocket && (!this.waitWebSocketSeen || this.openWaitWebSockets > 0)) {
                 return;
             }
@@ -1392,6 +1437,7 @@ function createCaptureSession(tabId, options) {
             this.cancelIdle();
         },
         startGrace(delayMs) {
+            if (this.manual) return;
             if (this.waitWebSocket) return;
             if (this.done || this.graceTimer) return;
             const extendUntil = Date.now() + delayMs + MAX_GRACE_EXTENSION_MS;
