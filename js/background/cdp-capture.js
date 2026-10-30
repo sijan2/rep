@@ -137,7 +137,7 @@ export class CDPCaptureController extends BrowserRuntime {
             const tab = await this.call(this.chrome.tabs, 'get', params.tab_id);
             const session = await this.startSession(params.tab_id, {
                 url: params.url || tab.url || 'about:blank', timeoutMs:bounded.timeout_ms,
-                idleMs:250, maxBodyBytes:DEFAULT_BODY_LIMIT, captureMode:'agent',
+                idleMs:250, maxBodyBytes:clampInteger(bounded.max_body_bytes, DEFAULT_BODY_LIMIT, 0, MAX_BODY_LIMIT), captureMode:'agent',
                 limits:captureLimits(params), leaseParams:params, manual:true,
             });
             session.manual = true;
@@ -911,6 +911,7 @@ export class CDPCaptureController extends BrowserRuntime {
             initiator: initiatorURL(params.initiator),
             headers: headersToMap(request.headers),
             body: '',
+            request_body_capture: { state: 'not_applicable', reason: 'no_request_body', source: 'cdp', captured_bytes: 0, observed_bytes: 0 },
             response: null,
             response_encoding: '',
             network_state: 'pending',
