@@ -8,11 +8,12 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "package": "node scripts/package.js",
-    "build": "npm test && npm run package"
+    "build": "npm test && npm run package",
+    "build:info": "node scripts/build-info.js",
+    "prepackage": "npm run build:info"
   },
   "devDependencies": {
     "vitest": "^1.0.0",
     "jsdom": "^23.0.0"
   }
 }
-

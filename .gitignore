@@ -22,3 +22,6 @@ coverage/
 # Packaging temp files
 .zip-files.txt
 rep-plus-extension.zip
+
+# Generated source digest read by the native bridge handshake.
+build-info.json

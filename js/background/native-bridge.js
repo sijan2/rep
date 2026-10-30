@@ -1,3 +1,4 @@
+import { loadProfileIdentity } from './profile-identity.js';
 const DEFAULT_HOST = 'com.repplus.host';
 const MAX_QUEUE_MESSAGES = 200;
 const MAX_RECONNECT_MS = 15000;
@@ -31,6 +32,11 @@ export class NativeBridge {
         this.incrementalCaptureSupported = false;
         this.captureHelloReceived = false;
         this.captureHelloWaiters = new Set();
+        this.identity = this.chrome.storage?.local && this.chrome.storage?.session ? null : {};
+        this.identityPending = false;
+        this.identityReady = this.identity ? Promise.resolve(this.identity) : loadProfileIdentity(this.chrome).then(identity => (this.identity = identity));
+        // Persisted identity is required before advertising a live bridge.
+        this.identityReady.catch(error => { this.lastError = error?.message || 'profile identity unavailable'; });
     }
 
     start() {
@@ -80,6 +86,14 @@ export class NativeBridge {
 
     connect() {
         if (!this.started || this.port) return;
+        if (!this.identity) {
+            if (!this.identityPending) {
+                this.identityPending = true;
+                this.identityReady.then(() => { this.identityPending = false; this.connect(); })
+                    .catch(() => { this.identityPending = false; });
+            }
+            return;
+        }
         try {
             const port = this.chrome.runtime.connectNative(this.hostName);
             this.port = port;
@@ -120,6 +134,7 @@ export class NativeBridge {
             client: 'background',
             extension_id: this.chrome.runtime.id,
             extension_version: manifest.version,
+            ...this.identity,
             user_agent: globalThis.navigator?.userAgent || '',
         };
     }
