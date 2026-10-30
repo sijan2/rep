@@ -148,3 +148,19 @@ describe('health lifecycle guards', () => {
         expect(() => runtime.acquireLease({ tab_id: 7 })).toThrow('reload is pending');
     });
 });
+
+describe('close versus a pending lease on an existing session', () => {
+    it('reserves a tab before acquire reaches its first async continuation', async () => {
+        const { chromeApi } = fixture();
+        chromeApi.tabs = { remove: vi.fn((_id, done) => done()) };
+        const runtime = new BrowserRuntime({ chromeApi });
+        let acquired;
+        runtime.semantic.acquire = vi.fn(() => new Promise(resolve => { acquired = resolve; }));
+        const pending = runtime.acquireLease({ tab_id: 7, owner: 'fixture/a', purpose: 'execute' });
+        await expect(runtime.closeTab({ tab_id: 7 })).rejects.toMatchObject({ code: 'tab_busy' });
+        expect(() => runtime.beginReload()).toThrow('browser operations are active');
+        expect(chromeApi.tabs.remove).not.toHaveBeenCalled();
+        acquired({ lease_id: 'fixture' }); await pending;
+        expect(runtime.pendingTabOperations.size).toBe(0);
+    });
+});
