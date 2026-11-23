@@ -291,7 +291,7 @@ Let's say you want to add detection for "MyAPI" tokens:
 
 ## Need Help?
 
-- Check existing features for examples (`features/ai/`, `features/bulk-replay/`)
+- Check existing features for examples (`features/extractors/`, `features/bulk-replay/`)
 - Review how events are used in `ui/request-list.js` and `ui/request-editor.js`
 - Look at `main.js` to see how features are initialized
 - Check existing rules in `rules/` directory for examples

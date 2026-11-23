@@ -124,7 +124,8 @@ export class NativeBridge {
                 this.lastError = error?.message || String(error);
             }
             this.flushQueue();
-            this.reconnectDelay = 250;
+            // Backoff resets only once the host answers hello (handleMessage);
+            // a port that opens and dies before replying keeps backing off.
         } catch (error) {
             this.port = null;
             this.lastError = error?.message || String(error);
@@ -286,6 +287,7 @@ export class NativeBridge {
             return;
         }
         if (message?.action === 'hello') {
+            this.reconnectDelay = 250;
             this.captureHelloReceived = true;
             this.captureAckSupported = message.capture_ack === true;
             this.incrementalCaptureSupported = message.incremental_capture === true;

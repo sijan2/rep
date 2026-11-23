@@ -2,10 +2,11 @@
 import { state, addToHistory } from '../core/state.js';
 import { elements } from '../ui/main-ui.js';
 import { events, EVENT_NAMES } from '../core/events.js';
-import { parseRequest } from './capture.js';
+import { parseRequest, findBrowserControlledHeaderEdits } from './capture.js';
 import { sendRequest } from './request-sender.js';
 import { formatRawResponse, getStatusClass } from './response-parser.js';
 import { formatBytes } from '../core/utils/format.js';
+import { escapeHtml } from '../core/utils/dom.js';
 import { renderDiff } from '../core/utils/misc.js';
 import { highlightHTTP } from '../core/utils/network.js';
 import { generateHexView } from '../ui/hex-view.js'
@@ -29,7 +30,16 @@ export async function handleSendRequest() {
     events.emit(EVENT_NAMES.UI_UPDATE_HISTORY_BUTTONS);
 
     try {
-        const { url, options, method, filteredHeaders, bodyText } = parseRequest(rawContent, useHttps);
+        const { url, options, browserControlledHeaders } = parseRequest(rawContent, useHttps);
+
+        // fetch() cannot send an edited Cookie, Origin or Referer; it silently substitutes the
+        // browser's own values. Refuse instead of showing a result the edited request did not produce.
+        const capturedHeaders = state.selectedRequest?.request?.headers || [];
+        const blockedEdits = findBrowserControlledHeaderEdits(browserControlledHeaders, capturedHeaders);
+        if (blockedEdits.length > 0) {
+            showRefusedSend(blockedEdits);
+            return;
+        }
 
         elements.resStatus.textContent = 'Sending...';
         elements.resStatus.className = 'status-badge';
@@ -131,6 +141,48 @@ export async function handleSendRequest() {
             showError(err);
         }
     }
+}
+
+const BROWSER_CONTROLLED_HEADER_NOTES = {
+    cookie: 'fetch() cannot set Cookie: the browser attaches its own cookie jar for this site, so the edited value is never sent, and deleting the line does not remove the cookies.',
+    cookie2: 'fetch() cannot set Cookie2: the browser attaches its own cookie jar for this site, so the edited value is never sent.',
+    origin: 'fetch() cannot set Origin: the panel sends Origin: chrome-extension://<id> on non-GET requests, whatever the editor says.',
+    referer: 'fetch() cannot set Referer: the panel sends no Referer at all, whatever the editor says.'
+};
+
+function previewValue(value) {
+    const text = String(value ?? '');
+    return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+}
+
+/**
+ * Shows why Send was refused: edited browser-controlled headers would be dropped silently.
+ * @param {Array<{name: string, change: string, editorValue: string, capturedValue: string}>} edits
+ */
+export function showRefusedSend(edits) {
+    elements.resStatus.textContent = 'Not sent';
+    elements.resStatus.className = 'status-badge status-4xx';
+    elements.resTime.textContent = '';
+    if (elements.resSize) elements.resSize.textContent = '';
+
+    const items = edits.map((edit) => {
+        const note = BROWSER_CONTROLLED_HEADER_NOTES[edit.name.toLowerCase()] || '';
+        const captured = edit.change === 'added'
+            ? 'not present in the captured request'
+            : `captured as <code>${escapeHtml(previewValue(edit.capturedValue))}</code>`;
+        return `<li><strong>${escapeHtml(edit.name)}</strong> ${edit.change} (${captured}). ${escapeHtml(note)}</li>`;
+    }).join('');
+
+    elements.rawResponseDisplay.innerHTML = `
+        <div class="send-refused" style="padding: 20px;">
+            <h3 style="margin-top: 0;">Not sent: this edit would be dropped silently</h3>
+            <p>The panel replays with the browser's <code>fetch()</code>, which owns these headers and ignores edited values. Sending now would show a response the edited request did not produce.</p>
+            <ul>${items}</ul>
+            <p>Undo the change to send from the panel. The panel cannot replay with a different cookie, Origin or Referer.</p>
+        </div>
+    `;
+    elements.rawResponseDisplay.style.display = 'block';
+    elements.rawResponseDisplay.style.visibility = 'visible';
 }
 
 function showError(err) {

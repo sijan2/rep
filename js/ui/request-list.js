@@ -18,16 +18,11 @@ export function createPageGroup(pageUrl) {
     const header = document.createElement('div');
     header.className = 'page-header';
 
-    const hasAnalysis = state.domainsWithAttackSurface.has(pageHostname);
-
     header.innerHTML = `
         <span class="page-toggle-btn">▶</span>
         <span class="page-icon">📄</span>
         <span class="page-name">${escapeHtml(pageHostname)}</span>
         <span class="page-count">(0)</span>
-        <button class="group-ai-btn ${hasAnalysis ? 'analyzed' : ''}" title="${hasAnalysis ? 'Show Normal View' : 'Analyze Attack Surface'}">
-            ${hasAnalysis ? '📋' : '⚡'}
-        </button>
         <button class="group-star-btn ${state.starredPages.has(pageHostname) ? 'active' : ''}" title="${state.starredPages.has(pageHostname) ? 'Unstar Group' : 'Star Group'}">
             ${state.starredPages.has(pageHostname) ? STAR_ICON_FILLED : STAR_ICON_OUTLINE}
         </button>
@@ -41,7 +36,7 @@ export function createPageGroup(pageUrl) {
 
     header.addEventListener('click', (e) => {
         // Don't toggle if clicking on buttons
-        if (e.target.closest('.group-ai-btn') || e.target.closest('.group-star-btn') || e.target.closest('.group-delete-btn')) return;
+        if (e.target.closest('.group-star-btn') || e.target.closest('.group-delete-btn')) return;
 
         group.classList.toggle('expanded');
 
@@ -53,31 +48,6 @@ export function createPageGroup(pageUrl) {
                 const toggle = domainGroup.querySelector('.group-toggle');
                 if (toggle) toggle.textContent = '▶';
             });
-        }
-    });
-
-    // AI button handler
-    const aiBtn = header.querySelector('.group-ai-btn');
-    aiBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-
-        const hasAnalysis = state.domainsWithAttackSurface.has(pageHostname);
-
-        if (hasAnalysis) {
-            // Toggle back to normal view
-            state.domainsWithAttackSurface.delete(pageHostname);
-            aiBtn.classList.remove('analyzed');
-            aiBtn.title = 'Analyze Attack Surface';
-            aiBtn.textContent = '⚡';
-
-            // Re-render requests for this domain
-            reRenderDomainRequests(pageHostname);
-            events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
-        } else {
-            // Analyze - use window function to avoid circular dependency
-            if (window.analyzeDomainAttackSurface) {
-                await window.analyzeDomainAttackSurface(pageHostname, group);
-            }
         }
     });
 
@@ -180,7 +150,7 @@ export function createDomainGroup(hostname, isThirdParty = false) {
     return group;
 }
 
-export function createRequestItemElement(request, index, categoryData) {
+export function createRequestItemElement(request, index) {
     const item = document.createElement('div');
     item.className = 'request-item';
     if (request.starred) item.classList.add('starred');
@@ -419,19 +389,6 @@ export function createRequestItemElement(request, index, categoryData) {
         });
     });
 
-    // Add confidence badge if category data is provided
-    if (categoryData) {
-        const badge = document.createElement('span');
-        badge.className = `confidence-badge confidence-${categoryData.confidence}`;
-        badge.textContent = categoryData.confidence;
-        badge.title = categoryData.reasoning;
-        badge.style.cssText = 'margin-left: 6px; font-size: 9px; padding: 2px 4px; border-radius: 2px;';
-        // Insert after URL span (which is the 3rd child: number, method, url)
-        // numberSpan, methodSpan, urlSpan, timeSpan, actionsDiv
-        // We want it after urlSpan
-        item.insertBefore(badge, timeSpan);
-    }
-
     return item;
 }
 
@@ -519,139 +476,10 @@ export function renderRequestItem(request, index) {
 }
 
 /**
- * Render attack surface categories for a specific domain
- */
-function renderDomainAttackSurface(pageContent, pageHostname) {
-    // Clear existing content
-    pageContent.innerHTML = '';
-
-    // Get all requests for this domain (page group)
-    const domainRequests = state.requests
-        .map((req, idx) => ({ req, idx }))
-        .filter(({ req }) => {
-            const requestPageHostname = getHostname(req.pageUrl || req.request.url);
-            return requestPageHostname === pageHostname;
-        });
-
-    // Group by category
-    const categoryGroups = {};
-    domainRequests.forEach(({ req, idx }) => {
-        const categoryData = state.attackSurfaceCategories[idx];
-        const categoryName = categoryData?.category || 'Uncategorized';
-
-        if (!categoryGroups[categoryName]) {
-            categoryGroups[categoryName] = {
-                items: [],
-                icon: categoryData?.icon || '❓',
-                color: getCategoryColor(categoryName)
-            };
-        }
-
-        categoryGroups[categoryName].items.push({ req, idx, categoryData });
-    });
-
-    // Render each category
-    Object.entries(categoryGroups).forEach(([categoryName, groupData]) => {
-        const categoryDiv = document.createElement('div');
-        categoryDiv.className = 'attack-surface-category';
-        categoryDiv.style.cssText = `
-            margin: 4px 0;
-            border-left: 3px solid ${groupData.color};
-            background: ${groupData.color}10;
-        `;
-
-        const categoryHeader = document.createElement('div');
-        categoryHeader.style.cssText = `
-            padding: 4px 8px;
-            font-size: 11px;
-            font-weight: 600;
-            color: ${groupData.color};
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        `;
-        categoryHeader.innerHTML = `
-            <span class="category-toggle">▼</span>
-            <span>${groupData.icon}</span>
-            <span>${categoryName}</span>
-            <span style="opacity: 0.6; margin-left: auto;">(${groupData.items.length})</span>
-        `;
-
-        const categoryContent = document.createElement('div');
-        categoryContent.className = 'category-content';
-
-        groupData.items.forEach(({ req, idx, categoryData }) => {
-            // Create request item element without DOM insertion
-            const item = createRequestItemElement(req, idx, categoryData);
-
-            categoryContent.appendChild(item);
-        });
-
-        // Toggle functionality
-        categoryHeader.addEventListener('click', () => {
-            const isExpanded = categoryContent.style.display !== 'none';
-            categoryContent.style.display = isExpanded ? 'none' : 'block';
-            categoryHeader.querySelector('.category-toggle').textContent = isExpanded ? '▶' : '▼';
-        });
-
-        categoryDiv.appendChild(categoryHeader);
-        categoryDiv.appendChild(categoryContent);
-        pageContent.appendChild(categoryDiv);
-    });
-}
-
-/**
- * Re-render requests for a specific domain (restore normal view)
- */
-function reRenderDomainRequests(pageHostname) {
-    const pageGroupId = `page-${pageHostname.replace(/[^a-zA-Z0-9-]/g, '-')}`;
-    const pageGroup = document.getElementById(pageGroupId);
-
-    if (pageGroup) {
-        const pageContent = pageGroup.querySelector('.page-content');
-        if (pageContent) {
-            pageContent.innerHTML = ''; // Clear attack surface view
-
-            // Find all requests for this domain and re-render them
-            state.requests.forEach((req, idx) => {
-                const reqHostname = getHostname(req.request?.url || req.pageUrl || '');
-                // Check if request belongs to this page group (either as first-party or third-party)
-                const requestPageHostname = getHostname(req.pageUrl || req.request.url);
-
-                if (requestPageHostname === pageHostname) {
-                    // This request belongs to this page group
-                    // We need to use the original render logic which appends to the correct group
-                    // But renderRequestItem appends to DOM based on pageUrl/hostname
-                    // So we can just call it
-                    events.emit(EVENT_NAMES.REQUEST_RENDERED, { request: req, index: idx });
-                }
-            });
-        }
-    }
-}
-
-/**
- * Generate a color for a category based on its name
- */
-function getCategoryColor(categoryName) {
-    const colors = [
-        '#ff6b6b', '#51cf66', '#4dabf7', '#ffd43b',
-        '#b197fc', '#ff922b', '#20c997', '#748ffc',
-        '#fa5252', '#94d82d', '#339af0', '#fcc419'
-    ];
-    let hash = 0;
-    for (let i = 0; i < categoryName.length; i++) {
-        hash = categoryName.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return colors[Math.abs(hash) % colors.length];
-}
-
-/**
  * Main function to render request list
  */
 export function renderRequestList() {
-    events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST); // Always use normal page-based view with optional attack surface per domain
+    events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
 }
 
 // Set up event listeners for decoupled communication
@@ -668,21 +496,6 @@ events.on(EVENT_NAMES.REQUEST_RENDERED, (data) => {
 export function filterRequests() {
     const requestList = getRequestList();
     if (!requestList) return;
-
-    // First, check if any domains have been analyzed and render them with attack surface view
-    state.domainsWithAttackSurface.forEach(domain => {
-        const pageGroupId = `page-${domain.replace(/[^a-zA-Z0-9-]/g, '-')}`;
-        const pageGroup = document.getElementById(pageGroupId);
-        if (pageGroup) {
-            const pageContent = pageGroup.querySelector('.page-content');
-            if (pageContent) {
-                // Only re-render if not already showing attack surface
-                if (!pageContent.querySelector('.attack-surface-category')) {
-                    renderDomainAttackSurface(pageContent, domain);
-                }
-            }
-        }
-    });
 
     const items = requestList.querySelectorAll('.request-item');
     let visibleCount = 0;
@@ -906,12 +719,10 @@ export function filterRequests() {
         const pageContent = group.querySelector('.page-content');
         const hasVisibleFirstParty = Array.from(pageContent.querySelectorAll('.path-group .request-item')).some(item => item.style.display !== 'none');
         const hasVisibleDomains = Array.from(pageContent.querySelectorAll('.domain-group')).some(domain => domain.style.display !== 'none');
-        const hasVisibleAttackSurface = pageContent.querySelector('.attack-surface-category') !== null;
-
-        group.style.display = (hasVisibleFirstParty || hasVisibleDomains || hasVisibleAttackSurface) ? 'block' : 'none';
+        group.style.display = (hasVisibleFirstParty || hasVisibleDomains) ? 'block' : 'none';
 
         // Auto-expand page groups when filtering (unless manually collapsed)
-        if ((hasVisibleFirstParty || hasVisibleDomains || hasVisibleAttackSurface) && !state.manuallyCollapsed && hasActiveFilters) {
+        if ((hasVisibleFirstParty || hasVisibleDomains) && !state.manuallyCollapsed && hasActiveFilters) {
             group.classList.add('expanded');
             const toggleBtn = group.querySelector('.page-toggle-btn');
             if (toggleBtn) toggleBtn.classList.add('expanded');

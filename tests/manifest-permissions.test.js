@@ -19,10 +19,13 @@ describe('extension permission boundaries', () => {
         expect(manifest.permissions).not.toContain('webRequest');
         expect(manifest.optional_permissions).toContain('webRequest');
         expect(manifest).not.toHaveProperty('host_permissions');
-        expect(manifest.optional_host_permissions).toEqual(expect.arrayContaining([
-            '<all_urls>',
-            'http://localhost:11434/*',
-            'http://127.0.0.1:11434/*'
-        ]));
+        expect(manifest.optional_host_permissions).toEqual(['<all_urls>']);
+    });
+
+    it('no longer requests the local model proxy origins removed with the AI chat', () => {
+        const text = JSON.stringify(manifest);
+        expect(text).not.toMatch(/11434/);
+        expect(text).not.toMatch(/localhost|127\.0\.0\.1/);
+        expect(manifest.description).not.toMatch(/AI/);
     });
 });

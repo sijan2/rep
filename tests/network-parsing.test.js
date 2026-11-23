@@ -1,6 +1,6 @@
 // Tests for network parsing (request parsing, response formatting, export/import)
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { parseRequest, executeRequest } from '../js/network/capture.js';
+import { parseRequest, executeRequest, buildRawRequest, findBrowserControlledHeaderEdits, BROWSER_CONTROLLED_HEADERS } from '../js/network/capture.js';
 import { formatRawResponse, getStatusClass } from '../js/network/response-parser.js';
 import { exportRequests, importRequests } from '../js/ui/ui-utils.js';
 import { state, clearRequests, addRequest } from '../js/core/state.js';
@@ -206,6 +206,178 @@ Host: example.com`;
     const result = parseRequest(rawContent, false);
 
     expect(result.url).toBe('http://example.com/api/users%20test?q=hello%20world');
+  });
+
+  it('should keep Cookie, Origin and Referer out of fetch() headers but report them', () => {
+    const rawContent = `POST /api/data HTTP/1.1
+Host: example.com
+Cookie: session=abc; theme=dark
+Origin: https://example.com
+Referer: https://example.com/page
+Authorization: Bearer token`;
+
+    const result = parseRequest(rawContent, false);
+
+    for (const name of ['Cookie', 'Origin', 'Referer']) {
+      expect(result.filteredHeaders).not.toHaveProperty(name);
+    }
+    expect(result.filteredHeaders['Authorization']).toBe('Bearer token');
+    expect(result.browserControlledHeaders).toEqual([
+      { name: 'Cookie', value: 'session=abc; theme=dark' },
+      { name: 'Origin', value: 'https://example.com' },
+      { name: 'Referer', value: 'https://example.com/page' }
+    ]);
+  });
+
+  it('should report no browser-controlled headers when none are present', () => {
+    const result = parseRequest(`GET /api HTTP/1.1
+Host: example.com
+Accept: */*`, false);
+
+    expect(result.browserControlledHeaders).toEqual([]);
+  });
+
+  it('should keep a CRLF body byte for byte', () => {
+    const body = '--boundary\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--boundary--\r\n';
+    const result = parseRequest(`POST /upload HTTP/1.1\nHost: example.com\nContent-Type: multipart/form-data; boundary=boundary\n\n${body}`, false);
+
+    expect(result.bodyText).toBe(body);
+    expect(result.options.body).toBe(body);
+  });
+});
+
+describe('Editor round trip (buildRawRequest -> parseRequest)', () => {
+  const captured = (overrides = {}) => ({
+    request: {
+      method: 'POST',
+      url: 'https://example.com/api/items?page=2',
+      httpVersion: 'HTTP/1.1',
+      headers: [
+        { name: ':authority', value: 'example.com' },
+        { name: 'Content-Type', value: 'application/json' },
+        { name: 'Cookie', value: 'session=abc' }
+      ],
+      postData: { text: '{"id":1}' },
+      ...overrides
+    }
+  });
+
+  it('builds the request line, Host and headers in capture order, skipping pseudo-headers', () => {
+    const raw = buildRawRequest(captured());
+
+    expect(raw).toBe([
+      'POST /api/items?page=2 HTTP/1.1',
+      'Host: example.com',
+      'Content-Type: application/json',
+      'Cookie: session=abc',
+      '',
+      '{"id":1}'
+    ].join('\n'));
+  });
+
+  it('keeps an explicit Host header and defaults the HTTP version', () => {
+    const raw = buildRawRequest(captured({
+      httpVersion: undefined,
+      headers: [{ name: 'Host', value: 'proxy.example.com' }, { name: 'Accept', value: '*/*' }],
+      postData: undefined
+    }));
+
+    expect(raw).toBe('POST /api/items?page=2 HTTP/1.1\nHost: proxy.example.com\nAccept: */*');
+  });
+
+  it('does not re-serialise JSON: big integers, duplicate keys and CRLF survive an unchanged resend', () => {
+    const body = '{"id": 12345678901234567890, "k": 1, "k": 2,\r\n "note": "x"}\r\n';
+    const raw = buildRawRequest(captured({ postData: { text: body } }));
+
+    expect(raw.endsWith('\n\n' + body)).toBe(true);
+
+    const parsed = parseRequest(raw, true);
+    expect(parsed.url).toBe('https://example.com/api/items?page=2');
+    expect(parsed.bodyText).toBe(body);
+    expect(parsed.options.body).toBe(body);
+    // The reformatting that used to happen would have produced this instead
+    expect(parsed.bodyText).not.toBe(JSON.stringify(JSON.parse(body), null, 2));
+  });
+
+  it('round-trips the captured browser-controlled headers unchanged', () => {
+    const request = captured();
+    const parsed = parseRequest(buildRawRequest(request), true);
+
+    expect(findBrowserControlledHeaderEdits(parsed.browserControlledHeaders, request.request.headers)).toEqual([]);
+  });
+});
+
+describe('findBrowserControlledHeaderEdits', () => {
+  const captured = [
+    { name: 'Host', value: 'example.com' },
+    { name: 'Cookie', value: 'session=abc' },
+    { name: 'Referer', value: 'https://example.com/page' },
+    { name: 'Authorization', value: 'Bearer token' }
+  ];
+
+  it('covers exactly the headers fetch() drops silently', () => {
+    expect(BROWSER_CONTROLLED_HEADERS).toEqual(['cookie', 'cookie2', 'origin', 'referer']);
+  });
+
+  it('returns nothing when the editor matches the capture (case- and whitespace-insensitive)', () => {
+    const editor = [
+      { name: 'cookie', value: '  session=abc ' },
+      { name: 'REFERER', value: 'https://example.com/page' }
+    ];
+    expect(findBrowserControlledHeaderEdits(editor, captured)).toEqual([]);
+  });
+
+  it('reports a changed Cookie with both values', () => {
+    const editor = [
+      { name: 'Cookie', value: 'session=hijacked' },
+      { name: 'Referer', value: 'https://example.com/page' }
+    ];
+    expect(findBrowserControlledHeaderEdits(editor, captured)).toEqual([
+      { name: 'Cookie', change: 'changed', editorValue: 'session=hijacked', capturedValue: 'session=abc' }
+    ]);
+  });
+
+  it('reports a removed Cookie, since the jar is still sent', () => {
+    const editor = [{ name: 'Referer', value: 'https://example.com/page' }];
+    expect(findBrowserControlledHeaderEdits(editor, captured)).toEqual([
+      { name: 'Cookie', change: 'removed', editorValue: '', capturedValue: 'session=abc' }
+    ]);
+  });
+
+  it('reports Origin or Referer that were added or changed', () => {
+    const editor = [
+      { name: 'Cookie', value: 'session=abc' },
+      { name: 'Origin', value: 'https://evil.example' },
+      { name: 'Referer', value: 'https://evil.example/' }
+    ];
+    expect(findBrowserControlledHeaderEdits(editor, captured)).toEqual([
+      { name: 'Origin', change: 'added', editorValue: 'https://evil.example', capturedValue: '' },
+      { name: 'Referer', change: 'changed', editorValue: 'https://evil.example/', capturedValue: 'https://example.com/page' }
+    ]);
+  });
+
+  it('treats a hand-written request (no capture) with a Cookie as an addition', () => {
+    expect(findBrowserControlledHeaderEdits([{ name: 'Cookie', value: 'a=1' }], [])).toEqual([
+      { name: 'Cookie', change: 'added', editorValue: 'a=1', capturedValue: '' }
+    ]);
+    expect(findBrowserControlledHeaderEdits([{ name: 'Cookie', value: 'a=1' }], undefined)).toHaveLength(1);
+  });
+
+  it('ignores headers the panel can send, such as Authorization', () => {
+    const editor = [
+      { name: 'Cookie', value: 'session=abc' },
+      { name: 'Referer', value: 'https://example.com/page' },
+      { name: 'Authorization', value: 'Bearer other' }
+    ];
+    expect(findBrowserControlledHeaderEdits(editor, captured)).toEqual([]);
+  });
+
+  it('compares repeated Cookie lines in order', () => {
+    const multi = [{ name: 'Cookie', value: 'a=1' }, { name: 'Cookie', value: 'b=2' }];
+    expect(findBrowserControlledHeaderEdits(multi, multi)).toEqual([]);
+    expect(findBrowserControlledHeaderEdits([multi[1], multi[0]], multi)).toEqual([
+      { name: 'Cookie', change: 'changed', editorValue: 'b=2\na=1', capturedValue: 'a=1\nb=2' }
+    ]);
   });
 });
 

@@ -15,7 +15,6 @@ export {
     starringState,
     timelineState,
     uiState,
-    attackSurfaceState,
     blockingState
 } from './state/index.js';
 
@@ -27,6 +26,5 @@ export {
     blockingActions,
     timelineActions,
     historyActions,
-    diffActions,
-    attackSurfaceActions
+    diffActions
 } from './state/index.js';

@@ -1667,16 +1667,10 @@ export function initExtractorUI() {
     const responseSearchBtn = document.getElementById('response-search-btn');
     const responseSearchInput = document.getElementById('response-search-input');
     const responseSearchRegexBtn = document.getElementById('response-search-regex-btn');
-    const responseSearchAiBtn = document.getElementById('response-search-ai-btn');
     const responseSearchFetch = document.getElementById('response-search-fetch');
     const responseSearchResults = document.getElementById('response-search-results');
 
     let isRegexMode = false;
-
-    // Initial State: Hide AI button
-    if (responseSearchAiBtn) {
-        responseSearchAiBtn.style.display = 'none';
-    }
 
     // Toggle Regex Mode
     if (responseSearchRegexBtn) {
@@ -1684,68 +1678,6 @@ export function initExtractorUI() {
             isRegexMode = !isRegexMode;
             responseSearchRegexBtn.classList.toggle('active', isRegexMode);
             responseSearchInput.placeholder = isRegexMode ? 'Search with Regex...' : 'Search in responses...';
-
-            // Toggle AI Button
-            if (responseSearchAiBtn) {
-                responseSearchAiBtn.style.display = isRegexMode ? 'flex' : 'none';
-            }
-        });
-    }
-
-    // AI Regex Generation
-    if (responseSearchAiBtn) {
-        responseSearchAiBtn.addEventListener('click', async () => {
-            const description = responseSearchInput.value.trim();
-            if (!description) {
-                alert('Please enter a description of what you want to find (e.g., "email addresses").');
-                return;
-            }
-
-            // UI Loading State
-            const originalIcon = responseSearchAiBtn.innerHTML;
-            responseSearchAiBtn.innerHTML = '<span class="loading-spinner-small">⏳</span>';
-            responseSearchAiBtn.disabled = true;
-            responseSearchInput.disabled = true;
-
-            try {
-                const { streamExplanationWithSystem, getAISettings } = await import('../ai/index.js');
-                const { apiKey } = getAISettings();
-
-                if (!apiKey) {
-                    alert('Please configure your AI API Key in Settings first.');
-                    return;
-                }
-
-                const systemPrompt = "You are a regex expert. Convert the user's description into a JavaScript-compatible Regular Expression. Return ONLY the regex pattern (without slashes or flags). Do not include any explanation.";
-                let generatedRegex = '';
-
-                await streamExplanationWithSystem(apiKey, getAISettings().model, systemPrompt, description, (text) => {
-                    generatedRegex = text.trim();
-                }, getAISettings().provider);
-
-                // Clean up result (remove backticks or extra text if any)
-                generatedRegex = generatedRegex.replace(/^`+|`+$/g, '').trim();
-
-                if (generatedRegex) {
-                    responseSearchInput.value = generatedRegex;
-
-                    // Enable Regex Mode automatically
-                    if (!isRegexMode) {
-                        isRegexMode = true;
-                        if (responseSearchRegexBtn) responseSearchRegexBtn.classList.add('active');
-                        responseSearchInput.placeholder = 'Search with Regex...';
-                    }
-                }
-
-            } catch (e) {
-                console.error('AI Regex generation failed:', e);
-                alert('Failed to generate regex: ' + e.message);
-            } finally {
-                responseSearchAiBtn.innerHTML = originalIcon;
-                responseSearchAiBtn.disabled = false;
-                responseSearchInput.disabled = false;
-                responseSearchInput.focus();
-            }
         });
     }
 

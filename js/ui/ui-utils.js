@@ -121,56 +121,19 @@ export function setupResizeHandle() {
             const offsetX = e.clientX - containerRect.left;
             const containerWidth = containerRect.width;
             
-            // Check if chat pane is open
-            const chatPane = document.getElementById('llm-chat-pane');
-            const isChatOpen = chatPane && chatPane.style.display !== 'none' && window.getComputedStyle(chatPane).display !== 'none';
-            
-            if (isChatOpen) {
-                // When chat is open, only resize request and response, keep chat fixed
-                const chatRect = chatPane.getBoundingClientRect();
-                const chatWidth = chatRect.width;
-                const chatResizeHandle = document.querySelector('.chat-resize-handle');
-                const chatResizeHandleWidth = chatResizeHandle ? (chatResizeHandle.offsetWidth || 5) : 5;
-                
-                // Available width is container minus chat pane and its resize handle
-                const availableWidth = containerWidth - chatWidth - chatResizeHandleWidth;
-                
-                // Enforce minimum pixel widths
-                const minLeftPx = 200;
-                const minRightPx = 200;
-                const clampedOffsetX = Math.min(
-                    Math.max(offsetX, minLeftPx),
-                    Math.max(availableWidth - minRightPx, minLeftPx)
-                );
-                
-                // Calculate percentages of available width (not full container)
-                let requestPercentage = (clampedOffsetX / availableWidth) * 100;
-                let responsePercentage = 100 - requestPercentage;
-                
-                // Convert to container percentages
-                const availablePercentage = (availableWidth / containerWidth) * 100;
-                requestPercentage = (requestPercentage / 100) * availablePercentage;
-                responsePercentage = (responsePercentage / 100) * availablePercentage;
-                
-                // Keep chat pane fixed, only adjust request and response
-                requestPane.style.flex = `0 0 ${requestPercentage}%`;
-                responsePane.style.flex = `0 0 ${responsePercentage}%`;
-            } else {
-                // When chat is closed, resize request and response normally
-                // Enforce minimum pixel widths to avoid layout cracking
-                const minLeftPx = 250;
-                const minRightPx = 250;
-                const clampedOffsetX = Math.min(
-                    Math.max(offsetX, minLeftPx),
-                    Math.max(containerWidth - minRightPx, minLeftPx)
-                );
+            // Enforce minimum pixel widths to avoid layout cracking
+            const minLeftPx = 250;
+            const minRightPx = 250;
+            const clampedOffsetX = Math.min(
+                Math.max(offsetX, minLeftPx),
+                Math.max(containerWidth - minRightPx, minLeftPx)
+            );
 
-                let percentage = (clampedOffsetX / containerWidth) * 100;
-                percentage = Math.max(20, Math.min(80, percentage));
+            let percentage = (clampedOffsetX / containerWidth) * 100;
+            percentage = Math.max(20, Math.min(80, percentage));
 
-                requestPane.style.flex = `0 0 ${percentage}%`;
-                responsePane.style.flex = `0 0 ${100 - percentage}%`;
-            }
+            requestPane.style.flex = `0 0 ${percentage}%`;
+            responsePane.style.flex = `0 0 ${100 - percentage}%`;
         }
     });
 

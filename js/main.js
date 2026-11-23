@@ -17,8 +17,6 @@ import { highlightHTTP, getHostname } from './core/utils/network.js';
 import { initTheme } from './ui/theme.js';
 import { initMultiTabCapture } from './network/multi-tab.js';
 import { initExtractorUI } from './features/extractors/index.js';
-import { setupAIFeatures } from './features/ai/index.js';
-import { setupLLMChat } from './features/llm-chat/index.js';
 import { handleSendRequest } from './network/handler.js';
 import { initSearch } from './search/index.js';
 import { initLiveExport } from './features/live-export.js';
@@ -40,14 +38,36 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.style.display = 'none';
     });
 
+    // Earlier versions kept model-provider API keys and AI output in the panel's localStorage.
+    // The AI features are gone; drop whatever those versions left behind.
+    for (const key of ['ai_provider', 'anthropic_api_key', 'anthropic_model', 'gemini_api_key', 'gemini_model',
+        'local_api_url', 'local_model', 'repPlusAttackSurfaceCache']) {
+        try {
+            localStorage.removeItem(key);
+        } catch {
+            // storage unavailable in restricted contexts
+        }
+    }
+
+    // Close any modal from its close button or by clicking its backdrop
+    document.querySelectorAll('.close-modal').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const modal = e.target.closest('.modal');
+            if (modal) modal.style.display = 'none';
+        });
+    });
+    window.addEventListener('click', (e) => {
+        if (e.target.classList.contains('modal')) {
+            e.target.style.display = 'none';
+        }
+    });
+
     // Initialize Features
     initTheme();
     initMultiTabCapture();
     initExtractorUI();
     setupBulkReplay();
-    setupAIFeatures(elements);
     setupJevClassification();
-    setupLLMChat(elements);
     initSearch();
     initLiveExport();
 

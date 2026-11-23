@@ -2,8 +2,16 @@
 // Capture controllers specialize only the capture-state hooks below.
 import { SemanticRuntime } from './semantic-runtime.js';
 import { navigate as navigatePage, screenshot as capturePage } from './page-control.js';
+import { NetworkLedger } from './network-ledger.js';
+import { captureGeometry } from './semantic-geometry.js';
 
 export const MAX_EXPRESSION_BYTES = 768 * 1024;
+
+// Raw CDP target control could reach tabs the user never handed to an agent.
+const REFUSED_TARGET_METHODS = new Set([
+    'Target.attachToTarget', 'Target.attachToBrowserTarget', 'Target.createTarget', 'Target.activateTarget',
+    'Target.exposeDevToolsProtocol', 'Target.setDiscoverTargets', 'Target.setAutoAttach',
+]);
 
 export class BrowserRuntime {
     constructor({ chromeApi = globalThis.chrome } = {}) {
@@ -25,6 +33,7 @@ export class BrowserRuntime {
             }
         });
         this.semantic = new SemanticRuntime(this);
+        this.ledger = new NetworkLedger(this);
     }
 
     // Short-lived waiters subscribe without registering another Chrome listener.
@@ -33,8 +42,20 @@ export class BrowserRuntime {
         return () => this.debuggerEventListeners.delete(listener);
     }
 
-    navigate(params) { return navigatePage(this, params); }
-    screenshot(params) { return capturePage(this, params); }
+    async navigate(params = {}) {
+        const target = String(params.url || '').trim();
+        if (target.startsWith('chrome-extension://')) throw rpcError('own_page_refused', 'cannot navigate to an extension page', { url: target });
+        return navigatePage(this, params);
+    }
+
+    screenshot(params = {}) { return capturePage(this, params); }
+
+    openLedger(params) { return this.ledger.open(params); }
+    readLedger(params) { return this.ledger.read(params); }
+    ledgerBody(params) { return this.ledger.body(params); }
+    closeLedger(params) { return this.ledger.close(params); }
+
+    geometry(params = {}) { return captureGeometry(this, params); }
 
     captureActivity() { return { active_captures: 0, queued_captures: 0 }; }
     isCapturingTab() { return false; }
@@ -45,6 +66,7 @@ export class BrowserRuntime {
             if (key.startsWith(`${source?.tabId}:`)) this.abandonChildCommands(key);
         }
         this.semantic.detached(source);
+        if (source?.tabId != null && !source.sessionId) this.ledger?.detached(source.tabId);
     }
 
     // Chromium answers a command to a child session that detached mid-flight
@@ -78,8 +100,12 @@ export class BrowserRuntime {
         try { return Promise.resolve(operation()).finally(release); }
         catch (error) { release(); throw error; }
     }
-    observe(params) { return this.withTabOperation(params, () => this.semantic.observe(params)); }
-    validateObservation(params) { return this.withTabOperation(params, () => this.semantic.validate(params)); }
+    observe(params) {
+        return this.withTabOperation(params, () => this.semantic.observe(params));
+    }
+    validateObservation(params) {
+        return this.withTabOperation(params, () => this.semantic.validate(params));
+    }
 
     async listTabs() {
         const tabs = await this.queryTabs({});
@@ -142,11 +168,24 @@ export class BrowserRuntime {
         }
         await this.debugDetachTarget(debuggee);
         this.controlAttachments.delete(key);
+        if (debuggee.tabId != null) this.ledger.detached(debuggee.tabId);
         return { attached: false, already_detached: false, debuggee };
+    }
+
+    // Guards shared by the raw and leased CDP paths: no raw target control and
+    // no navigating a controlled tab into this extension's own pages.
+    guardCDP(params = {}) {
+        const method = String(params.method || '').trim();
+        if (REFUSED_TARGET_METHODS.has(method)) throw rpcError('method_refused', `${method} is not available over browser.cdp`, { method });
+        if (method === 'Page.navigate') {
+            const target = String(params.command_params?.url || '').trim();
+            if (target.startsWith('chrome-extension://')) throw rpcError('own_page_refused', 'cannot navigate to an extension page', { url: target });
+        }
     }
 
     async sendCDP(params = {}) {
         this.assertReloadNotPending('send a CDP command');
+        this.guardCDP(params);
         if (params.lease_id || params.owner || params.frame_id || params.session_id || params.document_generation || params.generation) {
             return this.semantic.cdp(params);
         }
@@ -280,6 +319,8 @@ export class BrowserRuntime {
             url,
             active: Boolean(params.active),
         });
+        // Only tabs created here may carry a network ledger.
+        await this.ledger.recordOwnedTab(tab.id);
         return {
             created: true,
             tab_id: tab.id,
@@ -373,12 +414,13 @@ export class BrowserRuntime {
         return debuggee;
     }
 
+    // Keep a background tab rendering and focused like a foreground one. Idle
+    // and automation overrides are deliberately absent: they hide automation
+    // signals, which is outside what this extension does.
     async prepareRealBrowserContext(debuggee) {
         const commands = [
             ['Page.setWebLifecycleState', { state: 'active' }],
             ['Emulation.setFocusEmulationEnabled', { enabled: true }],
-            ['Emulation.setIdleOverride', { isUserActive: true, isScreenUnlocked: true }],
-            ['Emulation.setAutomationOverride', { enabled: false }],
         ];
         const applied = {};
         for (const [method, commandParams] of commands) {

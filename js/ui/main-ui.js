@@ -1,6 +1,6 @@
 // Main UI Module - Initialization and re-exports
 import { state } from '../core/state.js';
-import { getHostname, highlightHTTP } from '../core/utils/network.js';
+import { highlightHTTP } from '../core/utils/network.js';
 import { events, EVENT_NAMES } from '../core/events.js';
 import { selectRequest, switchRequestView, switchResponseView, toggleLayout, initPreviewControls, updatePreview } from './request-editor.js';
 import { generateHexView } from './hex-view.js';
@@ -43,8 +43,6 @@ export function initUI() {
     elements.colorFilterBtn = document.getElementById('color-filter-btn');
     elements.toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
     elements.showSidebarBtn = document.getElementById('show-sidebar-btn');
-    elements.llmChatToggleBtn = document.getElementById('llm-chat-toggle-btn');
-    elements.llmChatPane = document.getElementById('llm-chat-pane');
     
     // Filter elements
     elements.methodFilterBtn = document.getElementById('method-filter-btn');
@@ -71,135 +69,6 @@ export function initUI() {
     // Banner elements
     elements.promoBanner = document.getElementById('promo-banner');
     elements.closeBannerBtn = document.getElementById('close-banner');
-
-    // Function to analyze attack surface for a specific domain
-    // Note: This is kept here as it's a window function used by request-list.js
-    window.analyzeDomainAttackSurface = async function (domain, groupElement) {
-        if (state.isAnalyzingAttackSurface) return;
-
-        const { analyzeAttackSurface, cacheCategories } = await import('../features/attack-surface/index.js');
-
-        // Get all requests for this domain (page group)
-        const domainRequests = state.requests.filter((req, idx) => {
-            const requestPageHostname = getHostname(req.pageUrl || req.request.url);
-            return requestPageHostname === domain;
-        });
-
-        if (domainRequests.length === 0) {
-            alert('No requests found for this domain.');
-            return;
-        }
-
-        // 1. Identify Uncategorized Requests
-        const uncategorizedRequests = [];
-        domainRequests.forEach((req) => {
-            const globalIdx = state.requests.indexOf(req);
-            if (!state.attackSurfaceCategories[globalIdx]) {
-                uncategorizedRequests.push({ req, globalIdx });
-            }
-        });
-
-        const aiBtn = groupElement.querySelector('.group-ai-btn');
-
-        // 2. If all categorized, just show view
-        if (uncategorizedRequests.length === 0) {
-            state.domainsWithAttackSurface.add(domain);
-            if (aiBtn) {
-                aiBtn.disabled = false;
-                aiBtn.classList.add('analyzed');
-                aiBtn.title = 'Show Normal View';
-                aiBtn.textContent = '📋';
-            }
-            events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
-            return;
-        }
-
-        // 3. Deduplication for new requests
-        const uniqueRequestsMap = new Map(); // Signature -> { req, globalIdx }
-        const signatureToGlobalIndices = new Map(); // Signature -> [globalIdx, ...]
-
-        uncategorizedRequests.forEach(item => {
-            const urlObj = new URL(item.req.request.url);
-            const path = urlObj.pathname;
-            const params = Array.from(urlObj.searchParams.keys()).sort().join(',');
-            const signature = `${item.req.request.method} ${path} [${params}]`;
-
-            if (!uniqueRequestsMap.has(signature)) {
-                uniqueRequestsMap.set(signature, item);
-            }
-
-            if (!signatureToGlobalIndices.has(signature)) {
-                signatureToGlobalIndices.set(signature, []);
-            }
-            signatureToGlobalIndices.get(signature).push(item.globalIdx);
-        });
-
-        const requestsToAnalyze = Array.from(uniqueRequestsMap.values()).map(item => item.req);
-
-        const confirmed = confirm(
-            `Analyze ${requestsToAnalyze.length} new unique requests (from ${uncategorizedRequests.length} total new)?\n\n` +
-            `Existing categorized requests: ${domainRequests.length - uncategorizedRequests.length}\n` +
-            `Estimated tokens: ~${requestsToAnalyze.length * 100}`
-        );
-
-        if (!confirmed) return;
-
-        state.isAnalyzingAttackSurface = true;
-
-        // Show loading on AI button
-        if (aiBtn) {
-            aiBtn.disabled = true;
-            aiBtn.innerHTML = '<span class="ai-thinking">🧠</span>';
-            aiBtn.title = 'AI is thinking...';
-        }
-
-        try {
-            await analyzeAttackSurface(requestsToAnalyze, (progress) => {
-                if (progress.status === 'complete') {
-                    // Map results back to all matching requests
-                    Object.entries(progress.categories).forEach(([analyzedIdx, categoryData]) => {
-                        const representativeItem = Array.from(uniqueRequestsMap.values())[parseInt(analyzedIdx)];
-
-                        // Reconstruct signature to find all matching requests
-                        const urlObj = new URL(representativeItem.req.request.url);
-                        const path = urlObj.pathname;
-                        const params = Array.from(urlObj.searchParams.keys()).sort().join(',');
-                        const signature = `${representativeItem.req.request.method} ${path} [${params}]`;
-
-                        // Apply to all matching requests
-                        const globalIndices = signatureToGlobalIndices.get(signature) || [];
-                        globalIndices.forEach(globalIdx => {
-                            state.attackSurfaceCategories[globalIdx] = categoryData;
-                        });
-                    });
-
-                    cacheCategories(state.attackSurfaceCategories);
-                    state.domainsWithAttackSurface.add(domain);
-
-                    // Update AI button to "analyzed" state
-                    if (aiBtn) {
-                        aiBtn.disabled = false;
-                        aiBtn.classList.add('analyzed');
-                        aiBtn.title = 'Show Normal View';
-                        aiBtn.textContent = '📋';
-                    }
-
-                    // Re-render to show attack surface view for this domain
-                    events.emit(EVENT_NAMES.UI_UPDATE_REQUEST_LIST);
-                }
-            });
-        } catch (error) {
-            alert(`Analysis failed: ${error.message}`);
-            // Reset button on error
-            if (aiBtn) {
-                aiBtn.disabled = false;
-                aiBtn.textContent = '⚡';
-                aiBtn.title = 'Analyze Attack Surface';
-            }
-        } finally {
-            state.isAnalyzingAttackSurface = false;
-        }
-    };
 
     // Set up event listeners for decoupled communication
     setupEventListeners();

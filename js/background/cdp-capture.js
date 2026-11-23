@@ -9,6 +9,9 @@ const DEFAULT_IDLE_MS = 800;
 const DEFAULT_BODY_LIMIT = 8 * 1024 * 1024;
 const MAX_BODY_LIMIT = 256 * 1024 * 1024;
 const BODY_DRAIN_MS = 5000;
+// A capture task past its deadline still drains bodies and detaches; beyond
+// that it is abandoned so the queue and ambient exclusion cannot hang forever.
+const CAPTURE_ABANDON_GRACE_MS = BODY_DRAIN_MS + 5000;
 // Load grace may extend this far while pending loads keep making progress.
 const MAX_GRACE_EXTENSION_MS = 15000;
 const NETWORK_PROGRESS_EVENTS = new Set(['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed']);
@@ -92,15 +95,27 @@ export class CDPCaptureController extends BrowserRuntime {
         let releaseGate;
         let released = false;
         const gate = new Promise((resolve) => { releaseGate = resolve; });
+        gate.settled = false;
         const release = () => {
             if (released) return;
             released = true;
+            gate.settled = true;
             releaseGate();
         };
         this.captureTail = gate;
         this.queuedCaptures += 1;
 
-        await previous;
+        try {
+            // A settled tail is awaited directly so an idle queue keeps its
+            // single-tick start; only a live predecessor is raced to the deadline.
+            if (previous.settled !== false) await previous;
+            else await withinDeadline(previous, timeoutMs, () => rpcError('capture_queue_timeout', `${operation} expired while waiting for the active capture`, { timeout_ms: timeoutMs }));
+        } catch (error) {
+            this.queuedCaptures -= 1;
+            // The queue stays ordered: this slot opens only once the predecessor is done.
+            previous.then(release, release);
+            throw error;
+        }
         this.queuedCaptures -= 1;
         try {
             this.assertReloadNotPending(`start ${operation}`);
@@ -114,10 +129,11 @@ export class CDPCaptureController extends BrowserRuntime {
                     timeout_ms: timeoutMs,
                 });
             }
-            return await task({
-                ...params,
-                timeout_ms: Math.min(timeoutMs, Math.floor(remainingMs)),
-            });
+            return await withinDeadline(
+                task({ ...params, timeout_ms: Math.min(timeoutMs, Math.floor(remainingMs)) }),
+                remainingMs + CAPTURE_ABANDON_GRACE_MS,
+                () => rpcError('capture_deadline', `${operation} did not finish by its deadline and was abandoned`, { timeout_ms: timeoutMs }),
+            );
         } finally {
             this.captureOperationActive = false;
             release();
@@ -135,7 +151,7 @@ export class CDPCaptureController extends BrowserRuntime {
         const operation = this.runExplicitCapture(params, 'agent capture', async bounded => {
             this.semantic.lease(params);
             const tab = await this.call(this.chrome.tabs, 'get', params.tab_id);
-            const session = await this.startSession(params.tab_id, {
+                const session = await this.startSession(params.tab_id, {
                 url: params.url || tab.url || 'about:blank', timeoutMs:bounded.timeout_ms,
                 idleMs:250, maxBodyBytes:clampInteger(bounded.max_body_bytes, DEFAULT_BODY_LIMIT, 0, MAX_BODY_LIMIT), captureMode:'agent',
                 limits:captureLimits(params), leaseParams:params, manual:true,
@@ -403,17 +419,16 @@ export class CDPCaptureController extends BrowserRuntime {
             if (Number.isInteger(existingTabId) && existingTabId >= 0) {
                 tab = await this.call(this.chrome.tabs, 'get', existingTabId);
             } else {
-                const tabs = await this.queryTabs({});
-                tab = tabs.find((candidate) => sameOrigin(candidate.url || candidate.pendingUrl, url) && !candidate.discarded);
-                if (!tab) {
-                    tab = await this.call(this.chrome.tabs, 'create', {
-                        url: `${parsedURL.protocol}//${parsedURL.host}/`,
-                        active: false,
-                    });
-                    ownedTab = true;
-                    await this.waitForTabComplete(tab.id, Math.min(timeoutMs, 20000));
-                    tab = await this.call(this.chrome.tabs, 'get', tab.id);
-                }
+                // Never adopt a tab the user is working in. A fresh inactive
+                // tab on the origin carries the same cookies and is closed
+                // afterwards unless keep_tab asks otherwise.
+                tab = await this.call(this.chrome.tabs, 'create', {
+                    url: `${parsedURL.protocol}//${parsedURL.host}/`,
+                    active: false,
+                });
+                ownedTab = true;
+                await this.waitForTabComplete(tab.id, Math.min(timeoutMs, 20000));
+                tab = await this.call(this.chrome.tabs, 'get', tab.id);
             }
             if (!sameOrigin(tab.url || tab.pendingUrl, url)) {
                 if (redactOutput) {
@@ -550,6 +565,9 @@ export class CDPCaptureController extends BrowserRuntime {
 
     async startSession(tabId, options) {
         if (this.sessions.has(tabId)) throw rpcError('tab_busy', `tab ${tabId} already has an active capture`);
+        // Capture re-enables Network with its own buffers and detaches on finish;
+        // a ledger tab keeps its single long-lived observation instead.
+        if (this.ledger?.isLedgerTab(tabId)) throw rpcError('tab_busy', `tab ${tabId} has an open network ledger`);
         if (this.semantic.activeExecution(tabId)) {
             if (!options.leaseParams || this.semantic.lease(options.leaseParams).lease.purpose !== 'execute') throw rpcError('tab_busy', `tab ${tabId} has an active execution lease`);
         }
@@ -1919,6 +1937,18 @@ function evaluationSummary(evaluation) {
 
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Settles with the promise, or rejects with makeError() once ms have passed.
+function withinDeadline(promise, ms, makeError) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(makeError()), Math.max(0, ms));
+        timer.unref?.();
+        Promise.resolve(promise).then(
+            (value) => { clearTimeout(timer); resolve(value); },
+            (error) => { clearTimeout(timer); reject(error); },
+        );
+    });
 }
 
 function isStreamRecord(record) { return ['websocket', 'webtransport', 'webrtc', 'webrtc_media'].includes(record.record_kind); }

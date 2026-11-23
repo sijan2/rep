@@ -13,7 +13,6 @@ describe('State Management', () => {
     state.useRegex = false;
     state.starredPages.clear();
     state.starredDomains.clear();
-    state.domainsWithAttackSurface.clear();
     state.blockedQueue = [];
     state.blockRequests = false;
   });
@@ -130,16 +129,6 @@ describe('State Management', () => {
 
       expect(state.timelineFilterTimestamp).toBe(null);
       expect(state.timelineFilterRequestIndex).toBe(null);
-    });
-
-    it('should clear attack surface data', () => {
-      state.attackSurfaceCategories = { 0: { category: 'test' } };
-      state.domainsWithAttackSurface.add('example.com');
-
-      clearRequests();
-
-      expect(state.attackSurfaceCategories).toEqual({});
-      expect(state.domainsWithAttackSurface.size).toBe(0);
     });
 
     it('should reset diff state', () => {

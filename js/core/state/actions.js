@@ -241,8 +241,6 @@ export const requestActions = {
         state.currentResponse = null;
         state.timelineFilterTimestamp = null;
         state.timelineFilterRequestIndex = null;
-        state.attackSurfaceCategories = {};
-        state.domainsWithAttackSurface.clear();
         
         // Emit events
         events.emit(EVENT_NAMES.STATE_REQUESTS_CLEARED);
@@ -400,30 +398,6 @@ export const requestActions = {
         } else {
             state.starredDomains.delete(hostname);
         }
-        state.domainsWithAttackSurface.delete(hostname);
-        
-        // Clear attack surface categories for deleted requests
-        Object.keys(state.attackSurfaceCategories).forEach(key => {
-            const reqIndex = parseInt(key);
-            if (reqIndex < state.requests.length) {
-                const req = state.requests[reqIndex];
-                const reqPageHostname = getHostname(req.pageUrl || req.request.url);
-                const reqHostname = getHostname(req.request.url);
-                if (isPage) {
-                    if (reqPageHostname === hostname) {
-                        delete state.attackSurfaceCategories[key];
-                    }
-                } else {
-                    if (reqHostname === hostname) {
-                        delete state.attackSurfaceCategories[key];
-                    }
-                }
-            } else {
-                // Request was deleted, remove its category entry
-                delete state.attackSurfaceCategories[key];
-            }
-        });
-        
         // Clear selected request if it was deleted
         const selectedIndex = state.requests.indexOf(state.selectedRequest);
         if (state.selectedRequest && (selectedIndex === -1 || requestsToRemove.includes(selectedIndex))) {
@@ -703,34 +677,6 @@ export const diffActions = {
     }
 };
 
-// Attack Surface Actions
-export const attackSurfaceActions = {
-    /**
-     * Set attack surface category for a request
-     * @param {number} requestIndex - Index of the request
-     * @param {Object} categoryData - Category data
-     */
-    setCategory(requestIndex, categoryData) {
-        state.attackSurfaceCategories[requestIndex] = categoryData;
-    },
-    
-    /**
-     * Mark domain as having attack surface
-     * @param {string} domain - Domain name
-     */
-    markDomain(domain) {
-        state.domainsWithAttackSurface.add(domain);
-    },
-    
-    /**
-     * Set analyzing flag
-     * @param {boolean} analyzing - Whether analysis is in progress
-     */
-    setAnalyzing(analyzing) {
-        state.isAnalyzingAttackSurface = analyzing;
-    }
-};
-
 // Unified actions export (for convenience)
 export const actions = {
     request: requestActions,
@@ -739,6 +685,5 @@ export const actions = {
     blocking: blockingActions,
     timeline: timelineActions,
     history: historyActions,
-    diff: diffActions,
-    attackSurface: attackSurfaceActions
+    diff: diffActions
 };

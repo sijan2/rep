@@ -11,7 +11,6 @@ import { diffState } from './diff.js';
 import { starringState } from './starring.js';
 import { timelineState } from './timeline.js';
 import { uiState } from './ui.js';
-import { attackSurfaceState } from './attack-surface.js';
 import { blockingState } from './blocking.js';
 
 // Unified state object for backward compatibility
@@ -44,9 +43,6 @@ export const state = {
     // UI state
     ...uiState,
     
-    // Attack Surface state
-    ...attackSurfaceState,
-    
     // Blocking state
     ...blockingState
 };
@@ -54,10 +50,10 @@ export const state = {
 // Re-export individual state objects for direct access if needed
 export { requestState, filterState, historyState, undoRedoState, bulkReplayState };
 export { diffState, starringState, timelineState, uiState };
-export { attackSurfaceState, blockingState };
+export { blockingState };
 
 // Re-export actions (new centralized state mutations)
-export { actions, requestActions, filterActions, starringActions, blockingActions, timelineActions, historyActions, diffActions, attackSurfaceActions } from './actions.js';
+export { actions, requestActions, filterActions, starringActions, blockingActions, timelineActions, historyActions, diffActions } from './actions.js';
 
 // Import actions for use in legacy functions
 import { requestActions, historyActions } from './actions.js';

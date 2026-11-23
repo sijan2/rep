@@ -27,7 +27,10 @@ npm run test:ui
 - `state.test.js` - Tests for state management (addRequest, clearRequests, addToHistory, filter state, starring state, blocking state)
 - `events.test.js` - Tests for event system (EventBus, event emission, listening, unsubscription, error handling)
 - `extractors.test.js` - Tests for extractors feature (secret detection with Kingfisher, parameter extraction, endpoint extraction)
-- `network-parsing.test.js` - Tests for network parsing (request parsing, response formatting, status classification, export/import)
+- `network-parsing.test.js` - Tests for network parsing (request parsing, response formatting, status classification, export/import, byte-faithful editor round trip, browser-controlled header edit detection)
+- `request-handler.test.js` - Tests for Send: refuses edited Cookie/Origin/Referer headers that fetch() would drop silently
+- `request-editor.test.js` - Tests for the response preview sandbox (opaque origin) and the panel markup after the AI chat removal
+- `manifest-permissions.test.js` - Tests for the manifest permission boundaries
 
 ## Adding New Tests
 

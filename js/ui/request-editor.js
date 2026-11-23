@@ -6,6 +6,7 @@ import { generateHexView } from './hex-view.js';
 import { generateJsonView } from './json-view.js';
 import { events, EVENT_NAMES } from '../core/events.js';
 import { getStatusClass, formatRawResponse } from '../network/response-parser.js';
+import { buildRawRequest } from '../network/capture.js';
 import { elements } from './main-ui.js';
 
 // Store editor content per request to preserve modifications
@@ -68,38 +69,8 @@ function getOriginalRequestContent(requestIndex) {
         return null;
     }
     
-    // Reconstruct original request from captured data
-    const urlObj = new URL(request.request.url);
-    const path = urlObj.pathname + urlObj.search;
-    const method = request.request.method;
-    const httpVersion = request.request.httpVersion || 'HTTP/1.1';
-
-    let rawText = `${method} ${path} ${httpVersion}\n`;
-
-    let headers = request.request.headers;
-    const hasHost = headers.some(h => h.name.toLowerCase() === 'host');
-    if (!hasHost) {
-        rawText += `Host: ${urlObj.host}\n`;
-    }
-
-    rawText += headers
-        .filter(h => !h.name.startsWith(':'))
-        .map(h => `${h.name}: ${h.value}`)
-        .join('\n');
-
-    // Body
-    if (request.request.postData && request.request.postData.text) {
-        let bodyText = request.request.postData.text;
-        try {
-            const jsonBody = JSON.parse(bodyText);
-            bodyText = JSON.stringify(jsonBody, null, 2);
-        } catch (e) {
-            // Not JSON or invalid JSON, use as-is
-        }
-        rawText += '\n\n' + bodyText;
-    }
-    
-    return rawText;
+    // Reconstruct the original request from captured data, body byte for byte
+    return buildRawRequest(request);
 }
 
 /**
@@ -190,40 +161,10 @@ export function selectRequest(index) {
     let useHttps = false;
     
     if (!rawText) {
-        // No saved state - reconstruct from original captured request
-        // Parse URL
-        const urlObj = new URL(state.selectedRequest.request.url);
-        const path = urlObj.pathname + urlObj.search;
-        const method = state.selectedRequest.request.method;
-        const httpVersion = state.selectedRequest.request.httpVersion || 'HTTP/1.1';
-
-        // Construct Raw Request
-        rawText = `${method} ${path} ${httpVersion}\n`;
-
-        let headers = state.selectedRequest.request.headers;
-        const hasHost = headers.some(h => h.name.toLowerCase() === 'host');
-        if (!hasHost) {
-            rawText += `Host: ${urlObj.host}\n`;
-        }
-
-        rawText += headers
-            .filter(h => !h.name.startsWith(':'))
-            .map(h => `${h.name}: ${h.value}`)
-            .join('\n');
-
-        // Body
-        if (state.selectedRequest.request.postData && state.selectedRequest.request.postData.text) {
-            let bodyText = state.selectedRequest.request.postData.text;
-            try {
-                const jsonBody = JSON.parse(bodyText);
-                bodyText = JSON.stringify(jsonBody, null, 2);
-            } catch (e) {
-                // Not JSON or invalid JSON, use as-is
-            }
-            rawText += '\n\n' + bodyText;
-        }
-
-        useHttps = urlObj.protocol === 'https:';
+        // No saved state - reconstruct from the original captured request.
+        // The body is kept byte for byte so an unchanged resend matches the capture.
+        rawText = buildRawRequest(state.selectedRequest);
+        useHttps = new URL(state.selectedRequest.request.url).protocol === 'https:';
 
         // Initialize History (only for new/original requests)
         state.requestHistory = [];
@@ -494,12 +435,22 @@ function extractBody(rawHttp) {
     return '';
 }
 
+// Sandbox flags for the response preview. The preview always runs in an opaque origin:
+// never allow-same-origin (it would hand response HTML the panel's chrome-extension://
+// origin) and never top navigation. Scripts are opt-in and still bound by the opaque origin.
+export const PREVIEW_SANDBOX = 'allow-forms';
+export const PREVIEW_SANDBOX_WITH_SCRIPTS = 'allow-forms allow-scripts allow-popups';
+
 // Update preview iframe with response body
 export function updatePreview(rawResponse) {
     const iframe = elements.responsePreviewIframe || document.getElementById('response-preview-iframe');
     const allowScriptsCheckbox = elements.previewAllowScriptsCheckbox || document.getElementById('preview-allow-scripts');
     
     if (!iframe) return;
+
+    // Set the sandbox before any srcdoc so every branch below renders in the opaque origin
+    const allowScripts = Boolean(allowScriptsCheckbox && allowScriptsCheckbox.checked);
+    iframe.setAttribute('sandbox', allowScripts ? PREVIEW_SANDBOX_WITH_SCRIPTS : PREVIEW_SANDBOX);
 
     // Extract body from raw HTTP response
     const htmlBody = extractBody(rawResponse);
@@ -520,16 +471,6 @@ export function updatePreview(rawResponse) {
     if (!isHTML) {
         iframe.srcdoc = `<html><body style="padding: 20px; font-family: monospace; white-space: pre-wrap;">${escapeHtml(htmlBody)}</body></html>`;
         return;
-    }
-
-    // Update sandbox attribute based on checkbox
-    const allowScripts = allowScriptsCheckbox && allowScriptsCheckbox.checked;
-    if (allowScripts) {
-        // Allow scripts, popups (for links), and top-navigation (for form submissions)
-        iframe.setAttribute('sandbox', 'allow-forms allow-same-origin allow-scripts allow-popups allow-top-navigation-by-user-activation');
-    } else {
-        // Default: only allow forms and same-origin (no scripts, no popups)
-        iframe.setAttribute('sandbox', 'allow-forms allow-same-origin');
     }
 
     // Set the HTML content using srcdoc

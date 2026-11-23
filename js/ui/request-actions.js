@@ -111,22 +111,13 @@ export function deleteGroup(type, hostname, groupElement) {
 export function toggleAllGroups() {
     const requestList = getRequestList();
     if (!requestList) return;
-    
+
     const pageGroups = requestList.querySelectorAll('.page-group');
     const domainGroups = requestList.querySelectorAll('.domain-group');
-    const categoryGroups = requestList.querySelectorAll('.attack-surface-category');
-    const allGroups = [...pageGroups, ...domainGroups, ...categoryGroups];
+    const allGroups = [...pageGroups, ...domainGroups];
 
     // Check ALL groups to determine if we should collapse or expand
-    // This ensures that if a category is expanded (even inside a collapsed group), we trigger collapse
-    const anyExpanded = allGroups.some(g => {
-        if (g.classList.contains('attack-surface-category')) {
-            const content = g.querySelector('.category-content');
-            // If display is empty (default) or block, it's expanded
-            return content && content.style.display !== 'none';
-        }
-        return g.classList.contains('expanded');
-    });
+    const anyExpanded = allGroups.some(g => g.classList.contains('expanded'));
 
     const shouldExpand = !anyExpanded;
 
@@ -134,45 +125,29 @@ export function toggleAllGroups() {
     state.manuallyCollapsed = !shouldExpand;
 
     allGroups.forEach(group => {
-        if (group.classList.contains('attack-surface-category')) {
-            const content = group.querySelector('.category-content');
-            const toggle = group.querySelector('.category-toggle');
-
-            if (content && toggle) {
-                if (shouldExpand) {
-                    content.style.display = 'block';
-                    toggle.textContent = '▼';
-                } else {
-                    content.style.display = 'none';
-                    toggle.textContent = '▶';
-                }
-            }
+        if (shouldExpand) {
+            group.classList.add('expanded');
         } else {
-            // Toggle class on group
-            if (shouldExpand) {
-                group.classList.add('expanded');
-            } else {
-                group.classList.remove('expanded');
-            }
+            group.classList.remove('expanded');
+        }
 
-            // Clean up any inline styles that might have been set previously
-            const pageContent = group.querySelector('.page-content');
-            const domainContent = group.querySelector('.domain-content');
+        // Clean up any inline styles that might have been set previously
+        const pageContent = group.querySelector('.page-content');
+        const domainContent = group.querySelector('.domain-content');
 
-            if (pageContent) pageContent.style.display = '';
-            if (domainContent) domainContent.style.display = '';
+        if (pageContent) pageContent.style.display = '';
+        if (domainContent) domainContent.style.display = '';
 
-            // Update toggle icons
-            const pageToggle = group.querySelector('.page-toggle-btn');
-            const domainToggle = group.querySelector('.domain-toggle-btn');
+        // Update toggle icons
+        const pageToggle = group.querySelector('.page-toggle-btn');
+        const domainToggle = group.querySelector('.domain-toggle-btn');
 
-            if (shouldExpand) {
-                if (pageToggle) pageToggle.style.transform = 'rotate(90deg)';
-                if (domainToggle) domainToggle.style.transform = 'rotate(90deg)';
-            } else {
-                if (pageToggle) pageToggle.style.transform = 'rotate(0deg)';
-                if (domainToggle) domainToggle.style.transform = 'rotate(0deg)';
-            }
+        if (shouldExpand) {
+            if (pageToggle) pageToggle.style.transform = 'rotate(90deg)';
+            if (domainToggle) domainToggle.style.transform = 'rotate(90deg)';
+        } else {
+            if (pageToggle) pageToggle.style.transform = 'rotate(0deg)';
+            if (domainToggle) domainToggle.style.transform = 'rotate(0deg)';
         }
     });
 }

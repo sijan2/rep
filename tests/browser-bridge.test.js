@@ -205,11 +205,9 @@ describe('CDP control attachment', () => {
         expect(result.context_overrides).toEqual({
             'Page.setWebLifecycleState': true,
             'Emulation.setFocusEmulationEnabled': true,
-            'Emulation.setIdleOverride': true,
-            'Emulation.setAutomationOverride': true,
         });
         expect(attached).toEqual([{ debuggee: { tabId: 42 }, version: '1.3' }]);
-        expect(commands).toHaveLength(4);
+        expect(commands).toHaveLength(2);
 
         await controller.detachControl({ target_id: 'page-target' });
         expect(detached).toEqual([{ tabId: 42 }]);
