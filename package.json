@@ -13,7 +13,7 @@
     "prepackage": "npm run build:info"
   },
   "devDependencies": {
-    "vitest": "^1.0.0",
-    "jsdom": "^23.0.0"
+    "jsdom": "^23.0.0",
+    "vitest": "^5.0.3"
   }
 }
